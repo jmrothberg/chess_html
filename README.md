@@ -18,7 +18,34 @@ These links load `chess.html` straight from the repo. Human and search play work
 
 The same applies to `chess_full.html`, with the bonus that you can also play **LLM** there once you've converted a `.pth` to `.onnx` — the file picker reads from your local disk; nothing has to be hosted.
 
-**Search play** uses iterative-deepening alpha-beta minimax with quiescence and MVV-LVA ordering at depths 1–7.
+**Search play** uses iterative-deepening alpha-beta minimax with quiescence at depths 1–7. See "Search engine" below for what's under the hood.
+
+---
+
+## Search engine (Human / Search mode)
+
+The in-page engine in both `chess.html` and `chess_full.html` is a classical alpha-beta search with the following ingredients. You can pick depth 1–7 per side; depth 3 is the default and stays interactive.
+
+**Move generation & ordering**
+- Pseudo-legal moves filtered through a `causesCheck` simulator (no `if-king-in-check` legality precomputation; cheap enough for these depths).
+- Move ordering at every node: PV-move first, then captures by **MVV-LVA** (`100k + victim·10 − attacker`), then promotions (`80k`), then **killer moves** (two quiet moves per ply that recently caused a beta cutoff: 70k / 60k), then quiet moves sorted by **PST delta + history score**. Good ordering is half of alpha-beta strength.
+
+**Search**
+- Iterative deepening 1 → max-depth, with the previous depth's best move (`pv`) seeded into the next ordering pass.
+- Alpha-beta pruning with a fail-hard window.
+- **Quiescence search** at the leaves: stand-pat eval, then expand only captures, depth-capped at ply 10 to avoid runaway exchange ladders.
+- **Killer moves**: 2 slots per ply, updated when a *quiet* (non-capture, non-castle) move causes a beta cutoff.
+- **History heuristic**: cumulative `depth² ` score keyed by `from-to` square pair on every quiet cutoff. Both killers and history are reset per move so they don't bleed across turns.
+- **Repetition penalty at root**: candidate moves whose resulting position appears in the real-game `positionCounts` map get penalized — `-60 cp` for 2-fold (small nudge), `-30000 cp` for 3-fold (forced draw, catastrophic when winning). This is what stops the knight-shuffle when one side is ahead.
+
+**Evaluation** (centipawn units, side-to-move agnostic — positive = White is better)
+- Material: P=100, N=320, B=330, R=500, Q=900.
+- **Piece-square tables** (Tomasz Michniewski) for P/N/B/R/Q — every square has a different value, so an undeveloped knight on g1 is ~30 cp worse than the same knight on f3.
+- **Tapered king PST**: middlegame table (king tucked) while non-pawn material > 1700 cp; endgame table (king to center) below that.
+- **Bishop pair bonus**: +30 cp.
+- Mate scores: `±(10000 + depth)` so shorter mates are preferred.
+
+**What it doesn't have** (deliberately, for clarity and small code size): no transposition table, no Zobrist hashing, no SEE, no null-move pruning, no late-move reductions, no opening book, no syzygy. That's why it's good for casual play but not a tournament engine. If you want strength, increase depth — depth 5 typically beats most casual humans.
 
 ---
 
