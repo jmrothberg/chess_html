@@ -82,7 +82,7 @@ def detect_n_kv_heads(model):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--pth", required=True, help="Path to source .pth checkpoint")
+    ap.add_argument("--pth", required=False, help="Path to source .pth checkpoint")
     ap.add_argument("--out", required=True, help="Path to write .onnx")
     ap.add_argument("--fp16", dest="fp16", action="store_true", default=True,
                     help="Convert weights to float16 after export (default)")
@@ -93,93 +93,127 @@ def main():
     ap.add_argument("--opset", type=int, default=17)
     ap.add_argument("--seed-len", type=int, default=16,
                     help="Sample sequence length used for tracing")
+    ap.add_argument("--force-export", action="store_true",
+                    help="Re-trace+export even if .fp32.tmp.onnx already exists")
     args = ap.parse_args()
-
-    if not os.path.isfile(args.pth):
-        print(f"ERROR: not a file: {args.pth}", file=sys.stderr)
-        sys.exit(2)
-
-    print(f"Loading {args.pth} ...")
-    model, vocab_size, n_embd, n_head, block_size, n_layer, dropout, tokenizer = \
-        inference.load_model_file(checkpoint_path=args.pth)
-    if model is None:
-        print("ERROR: load_model_file returned None.", file=sys.stderr)
-        sys.exit(3)
-
-    token_mode = getattr(model, "_token_mode", "4token")
-    n_kv_heads = detect_n_kv_heads(model)
-
-    model.eval()
-    # Drop game-mask path: the browser loop is always single-game continuation.
-    if hasattr(model, "use_chess"):
-        model.use_chess = False
-    if hasattr(model, "start_game_token"):
-        model.start_game_token = None
-
-    # Pre-convert causal_mask buffers to bool so the .bool() cast inside
-    # MultiQueryAttention becomes a no-op and onnxconverter-common's float16
-    # pass doesn't leave a fp32-typed Cast node that mismatches its fp16 data.
-    if hasattr(model, "blocks"):
-        for blk in model.blocks:
-            attn = getattr(blk, "attn", None)
-            if attn is not None and hasattr(attn, "causal_mask"):
-                attn.causal_mask = attn.causal_mask.bool()
-
-    T = max(2, args.seed_len)
-    if token_mode == "4token":
-        wrapper = FourTokenExport(model)
-        seed_ids = torch.zeros(1, T, dtype=torch.long)
-        seed_ids[0, 0] = inference.STARTGAME
-        from_idx = torch.zeros(1, dtype=torch.long)
-        sample = (seed_ids, from_idx)
-        input_names = ["input_ids", "from_idx"]
-        output_names = ["from_logits", "to_logits", "promo_logits"]
-        dynamic_axes = {"input_ids": {1: "T"}}
-    elif token_mode == "classic":
-        wrapper = ClassicExport(model)
-        seed_ids = torch.zeros(1, T, dtype=torch.long)
-        sample = (seed_ids,)
-        input_names = ["input_ids"]
-        output_names = ["logits"]
-        dynamic_axes = {"input_ids": {1: "T"}}
-    else:
-        print(f"ERROR: unsupported token_mode={token_mode}", file=sys.stderr)
-        sys.exit(4)
-
-    tmp_path = args.out + ".fp32.tmp.onnx"
-    print(f"Tracing & exporting ONNX (token_mode={token_mode}, opset={args.opset}) -> {tmp_path}")
-    with torch.no_grad():
-        torch.onnx.export(
-            wrapper,
-            sample,
-            tmp_path,
-            input_names=input_names,
-            output_names=output_names,
-            dynamic_axes=dynamic_axes,
-            opset_version=args.opset,
-            do_constant_folding=True,
-        )
 
     import onnx
 
-    print("Adding metadata_props ...")
-    m = onnx.load(tmp_path)
+    tmp_path = args.out + ".fp32.tmp.onnx"
 
-    def add_meta(k, v):
-        p = m.metadata_props.add()
-        p.key = str(k)
-        p.value = str(v)
+    # If a metadata-tagged tmp file already exists, skip the (very slow) trace+export
+    # step and reuse it. This makes int8/fp16 retries fast and survives a crashed
+    # final-conversion attempt.
+    reuse = (not args.force_export) and os.path.isfile(tmp_path)
+    if reuse:
+        try:
+            existing = onnx.load(tmp_path)
+            meta = {p.key: p.value for p in existing.metadata_props}
+            if "token_mode" in meta and "block_size" in meta:
+                token_mode = meta["token_mode"]
+                block_size = int(meta.get("block_size", 512))
+                vocab_size = int(meta.get("vocab_size", 140))
+                n_embd = int(meta.get("n_embd", 0))
+                n_head = int(meta.get("n_head", 0))
+                n_layer = int(meta.get("n_layer", 0))
+                n_kv_heads = int(meta["n_kv_heads"]) if "n_kv_heads" in meta else None
+                size_mb = os.path.getsize(tmp_path) / (1024 * 1024)
+                print(f"Reusing existing {tmp_path} ({size_mb:.1f} MB)")
+                print(f"  token_mode={token_mode}  block_size={block_size}  vocab_size={vocab_size}")
+                print("  (use --force-export to redo the trace+export step)")
+            else:
+                reuse = False
+        except Exception as e:
+            print(f"Could not reuse {tmp_path} ({e}); re-exporting.")
+            reuse = False
 
-    add_meta("token_mode", token_mode)
-    add_meta("block_size", block_size)
-    add_meta("vocab_size", vocab_size)
-    add_meta("n_embd", n_embd)
-    add_meta("n_head", n_head)
-    add_meta("n_layer", n_layer)
-    if n_kv_heads is not None:
-        add_meta("n_kv_heads", n_kv_heads)
-    add_meta("arch_version", "1")
-    onnx.save(m, tmp_path)
+    if not reuse:
+        if not args.pth:
+            print("ERROR: --pth is required when no reusable .fp32.tmp.onnx exists.",
+                  file=sys.stderr)
+            sys.exit(2)
+        if not os.path.isfile(args.pth):
+            print(f"ERROR: not a file: {args.pth}", file=sys.stderr)
+            sys.exit(2)
+
+        print(f"Loading {args.pth} ...")
+        model, vocab_size, n_embd, n_head, block_size, n_layer, dropout, tokenizer = \
+            inference.load_model_file(checkpoint_path=args.pth)
+        if model is None:
+            print("ERROR: load_model_file returned None.", file=sys.stderr)
+            sys.exit(3)
+
+        token_mode = getattr(model, "_token_mode", "4token")
+        n_kv_heads = detect_n_kv_heads(model)
+
+        model.eval()
+        # Drop game-mask path: the browser loop is always single-game continuation.
+        if hasattr(model, "use_chess"):
+            model.use_chess = False
+        if hasattr(model, "start_game_token"):
+            model.start_game_token = None
+
+        # Pre-convert causal_mask buffers to bool so the .bool() cast inside
+        # MultiQueryAttention becomes a no-op and onnxconverter-common's float16
+        # pass doesn't leave a fp32-typed Cast node that mismatches its fp16 data.
+        if hasattr(model, "blocks"):
+            for blk in model.blocks:
+                attn = getattr(blk, "attn", None)
+                if attn is not None and hasattr(attn, "causal_mask"):
+                    attn.causal_mask = attn.causal_mask.bool()
+
+        T = max(2, args.seed_len)
+        if token_mode == "4token":
+            wrapper = FourTokenExport(model)
+            seed_ids = torch.zeros(1, T, dtype=torch.long)
+            seed_ids[0, 0] = inference.STARTGAME
+            from_idx = torch.zeros(1, dtype=torch.long)
+            sample = (seed_ids, from_idx)
+            input_names = ["input_ids", "from_idx"]
+            output_names = ["from_logits", "to_logits", "promo_logits"]
+            dynamic_axes = {"input_ids": {1: "T"}}
+        elif token_mode == "classic":
+            wrapper = ClassicExport(model)
+            seed_ids = torch.zeros(1, T, dtype=torch.long)
+            sample = (seed_ids,)
+            input_names = ["input_ids"]
+            output_names = ["logits"]
+            dynamic_axes = {"input_ids": {1: "T"}}
+        else:
+            print(f"ERROR: unsupported token_mode={token_mode}", file=sys.stderr)
+            sys.exit(4)
+
+        print(f"Tracing & exporting ONNX (token_mode={token_mode}, opset={args.opset}) -> {tmp_path}")
+        with torch.no_grad():
+            torch.onnx.export(
+                wrapper,
+                sample,
+                tmp_path,
+                input_names=input_names,
+                output_names=output_names,
+                dynamic_axes=dynamic_axes,
+                opset_version=args.opset,
+                do_constant_folding=True,
+            )
+
+        print("Adding metadata_props ...")
+        m = onnx.load(tmp_path)
+
+        def add_meta(k, v):
+            p = m.metadata_props.add()
+            p.key = str(k)
+            p.value = str(v)
+
+        add_meta("token_mode", token_mode)
+        add_meta("block_size", block_size)
+        add_meta("vocab_size", vocab_size)
+        add_meta("n_embd", n_embd)
+        add_meta("n_head", n_head)
+        add_meta("n_layer", n_layer)
+        if n_kv_heads is not None:
+            add_meta("n_kv_heads", n_kv_heads)
+        add_meta("arch_version", "1")
+        onnx.save(m, tmp_path)
 
     final_path = args.out
     if args.int8:
