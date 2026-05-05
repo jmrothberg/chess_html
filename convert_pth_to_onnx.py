@@ -116,6 +116,15 @@ def main():
     if hasattr(model, "start_game_token"):
         model.start_game_token = None
 
+    # Pre-convert causal_mask buffers to bool so the .bool() cast inside
+    # MultiQueryAttention becomes a no-op and onnxconverter-common's float16
+    # pass doesn't leave a fp32-typed Cast node that mismatches its fp16 data.
+    if hasattr(model, "blocks"):
+        for blk in model.blocks:
+            attn = getattr(blk, "attn", None)
+            if attn is not None and hasattr(attn, "causal_mask"):
+                attn.causal_mask = attn.causal_mask.bool()
+
     T = max(2, args.seed_len)
     if token_mode == "4token":
         wrapper = FourTokenExport(model)
@@ -182,7 +191,11 @@ def main():
         from onnxconverter_common import float16
         print("Converting weights to float16 ...")
         m_in = onnx.load(tmp_path)
-        m16 = float16.convert_float_to_float16(m_in, keep_io_types=True)
+        m16 = float16.convert_float_to_float16(
+            m_in,
+            keep_io_types=True,
+            disable_shape_infer=True,
+        )
         onnx.save(m16, final_path)
         os.remove(tmp_path)
     else:
