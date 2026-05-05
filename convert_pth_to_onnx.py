@@ -191,10 +191,15 @@ def main():
         from onnxconverter_common import float16
         print("Converting weights to float16 ...")
         m_in = onnx.load(tmp_path)
+        # Cast nodes are the recurring source of fp16 type-mismatch failures
+        # in this architecture (causal_mask cast, RMSNorm/QK-Norm constants,
+        # SDPA decomposition). Keep them in fp32; the converter inserts the
+        # bridging Casts at op boundaries automatically.
         m16 = float16.convert_float_to_float16(
             m_in,
             keep_io_types=True,
             disable_shape_infer=True,
+            op_block_list=["Cast"],
         )
         onnx.save(m16, final_path)
         os.remove(tmp_path)
