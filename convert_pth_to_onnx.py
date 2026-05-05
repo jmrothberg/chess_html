@@ -80,10 +80,59 @@ def detect_n_kv_heads(model):
     return None
 
 
+def _gui_pick_pth():
+    """Open a Finder/Tk file picker to choose a .pth checkpoint.
+
+    Returns the absolute path string, or None if the user cancelled.
+    Falls back gracefully if tkinter isn't available.
+    """
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception:
+        return None
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        # Default to the chess models dir if it exists.
+        initial = os.path.join(HERE, "Chess_LLM_models copy")
+        if not os.path.isdir(initial):
+            initial = HERE
+        path = filedialog.askopenfilename(
+            title="Pick a chess .pth checkpoint to convert",
+            initialdir=initial,
+            filetypes=[("PyTorch checkpoint", "*.pth"), ("All files", "*.*")],
+        )
+    finally:
+        root.destroy()
+    return path or None
+
+
+def _gui_pick_out(default_dir, default_name):
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception:
+        return None
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        path = filedialog.asksaveasfilename(
+            title="Save .onnx as",
+            initialdir=default_dir,
+            initialfile=default_name,
+            defaultextension=".onnx",
+            filetypes=[("ONNX model", "*.onnx")],
+        )
+    finally:
+        root.destroy()
+    return path or None
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--pth", required=False, help="Path to source .pth checkpoint")
-    ap.add_argument("--out", required=True, help="Path to write .onnx")
+    ap.add_argument("--pth", required=False, help="Path to source .pth checkpoint (omit to pick via Finder)")
+    ap.add_argument("--out", required=False, help="Path to write .onnx (omit to pick via Finder)")
     ap.add_argument("--fp16", dest="fp16", action="store_true", default=True,
                     help="Convert weights to float16 after export (default)")
     ap.add_argument("--no-fp16", dest="fp16", action="store_false",
@@ -96,6 +145,34 @@ def main():
     ap.add_argument("--force-export", action="store_true",
                     help="Re-trace+export even if .fp32.tmp.onnx already exists")
     args = ap.parse_args()
+
+    # Friendly fallback: if invoked from Terminal with no flags, pop up a
+    # Finder dialog so the user doesn't have to type long paths.
+    # Probe for a reusable tmp first (when --out is given) so we don't ask
+    # for a .pth we won't actually need.
+    can_reuse_known = (
+        (not args.force_export)
+        and args.out
+        and os.path.isfile(args.out + ".fp32.tmp.onnx")
+    )
+    if not args.pth and not can_reuse_known:
+        picked = _gui_pick_pth()
+        if not picked:
+            print("ERROR: no .pth selected (cancelled or tkinter unavailable).", file=sys.stderr)
+            sys.exit(2)
+        args.pth = picked
+        print(f"Selected .pth: {args.pth}")
+    if not args.out:
+        # Default location: next to the chosen .pth with the same stem.
+        default_dir = os.path.dirname(args.pth) if args.pth else HERE
+        default_name = os.path.splitext(os.path.basename(args.pth or "model.pth"))[0] + ".onnx"
+        picked = _gui_pick_out(default_dir, default_name)
+        if not picked:
+            args.out = os.path.join(default_dir, default_name)
+            print(f"No save location chosen — defaulting to {args.out}")
+        else:
+            args.out = picked
+            print(f"Output .onnx: {args.out}")
 
     import onnx
 
