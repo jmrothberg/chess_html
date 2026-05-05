@@ -58,8 +58,8 @@
     </select>
     <select class="depth-picker hidden" data-color="white">
       <option value="1">Depth 1</option>
-      <option value="2" selected>Depth 2</option>
-      <option value="3">Depth 3</option>
+      <option value="2">Depth 2</option>
+      <option value="3" selected>Depth 3</option>
       <option value="4">Depth 4</option>
       <option value="5">Depth 5</option>
       <option value="6">Depth 6</option>
@@ -79,8 +79,8 @@
     </select>
     <select class="depth-picker" data-color="black">
       <option value="1">Depth 1</option>
-      <option value="2" selected>Depth 2</option>
-      <option value="3">Depth 3</option>
+      <option value="2">Depth 2</option>
+      <option value="3" selected>Depth 3</option>
       <option value="4">Depth 4</option>
       <option value="5">Depth 5</option>
       <option value="6">Depth 6</option>
@@ -109,7 +109,7 @@ const PIECE_VALUES = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
 
 let board, turn, selected, possibleMoves, gameOver, castling, enPassant, halfMoveClock, fullMoveNumber;
 let computerThinking;
-let players = { white: { type: 'human' }, black: { type: 'search', depth: 2 } };
+let players = { white: { type: 'human' }, black: { type: 'search', depth: 3 } };
 let uciHistory = [];
 let llmStats = {
   white: { tries: 0, fallbacks: 0, sumRank: 0, maxRank: 0, lastRank: 0 },
@@ -315,17 +315,124 @@ function detectNonMateDraw() {
 
 const PIECE_VAL = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 20000 };
 
-function moveScore(move, pv) {
+// Piece-square tables (Tomasz Michniewski, white perspective; rank 8 = idx 0..7).
+// For black, mirror via (7-r)*8 + c. Stops the engine from shuffling pieces back
+// and forth: every square has a different value, so undoing a developing move
+// loses centipawns and minimax declines it.
+const PST_P = [
+   0,  0,  0,  0,  0,  0,  0,  0,
+  50, 50, 50, 50, 50, 50, 50, 50,
+  10, 10, 20, 30, 30, 20, 10, 10,
+   5,  5, 10, 25, 25, 10,  5,  5,
+   0,  0,  0, 20, 20,  0,  0,  0,
+   5, -5,-10,  0,  0,-10, -5,  5,
+   5, 10, 10,-20,-20, 10, 10,  5,
+   0,  0,  0,  0,  0,  0,  0,  0
+];
+const PST_N = [
+ -50,-40,-30,-30,-30,-30,-40,-50,
+ -40,-20,  0,  0,  0,  0,-20,-40,
+ -30,  0, 10, 15, 15, 10,  0,-30,
+ -30,  5, 15, 20, 20, 15,  5,-30,
+ -30,  0, 15, 20, 20, 15,  0,-30,
+ -30,  5, 10, 15, 15, 10,  5,-30,
+ -40,-20,  0,  5,  5,  0,-20,-40,
+ -50,-40,-30,-30,-30,-30,-40,-50
+];
+const PST_B = [
+ -20,-10,-10,-10,-10,-10,-10,-20,
+ -10,  0,  0,  0,  0,  0,  0,-10,
+ -10,  0,  5, 10, 10,  5,  0,-10,
+ -10,  5,  5, 10, 10,  5,  5,-10,
+ -10,  0, 10, 10, 10, 10,  0,-10,
+ -10, 10, 10, 10, 10, 10, 10,-10,
+ -10,  5,  0,  0,  0,  0,  5,-10,
+ -20,-10,-10,-10,-10,-10,-10,-20
+];
+const PST_R = [
+   0,  0,  0,  0,  0,  0,  0,  0,
+   5, 10, 10, 10, 10, 10, 10,  5,
+  -5,  0,  0,  0,  0,  0,  0, -5,
+  -5,  0,  0,  0,  0,  0,  0, -5,
+  -5,  0,  0,  0,  0,  0,  0, -5,
+  -5,  0,  0,  0,  0,  0,  0, -5,
+  -5,  0,  0,  0,  0,  0,  0, -5,
+   0,  0,  0,  5,  5,  0,  0,  0
+];
+const PST_Q = [
+ -20,-10,-10, -5, -5,-10,-10,-20,
+ -10,  0,  0,  0,  0,  0,  0,-10,
+ -10,  0,  5,  5,  5,  5,  0,-10,
+  -5,  0,  5,  5,  5,  5,  0, -5,
+   0,  0,  5,  5,  5,  5,  0, -5,
+ -10,  5,  5,  5,  5,  5,  0,-10,
+ -10,  0,  5,  0,  0,  0,  0,-10,
+ -20,-10,-10, -5, -5,-10,-10,-20
+];
+const PST_K_MG = [
+ -30,-40,-40,-50,-50,-40,-40,-30,
+ -30,-40,-40,-50,-50,-40,-40,-30,
+ -30,-40,-40,-50,-50,-40,-40,-30,
+ -30,-40,-40,-50,-50,-40,-40,-30,
+ -20,-30,-30,-40,-40,-30,-30,-20,
+ -10,-20,-20,-20,-20,-20,-20,-10,
+  20, 20,  0,  0,  0,  0, 20, 20,
+  20, 30, 10,  0,  0, 10, 30, 20
+];
+const PST_K_EG = [
+ -50,-40,-30,-20,-20,-30,-40,-50,
+ -30,-20,-10,  0,  0,-10,-20,-30,
+ -30,-10, 20, 30, 30, 20,-10,-30,
+ -30,-10, 30, 40, 40, 30,-10,-30,
+ -30,-10, 30, 40, 40, 30,-10,-30,
+ -30,-10, 20, 30, 30, 20,-10,-30,
+ -30,-30,  0,  0,  0,  0,-30,-30,
+ -50,-30,-30,-30,-30,-30,-30,-50
+];
+const PST_BY_PIECE = { p: PST_P, n: PST_N, b: PST_B, r: PST_R, q: PST_Q };
+
+// Killer moves (2 quiet moves per ply that recently caused a beta cutoff) and a
+// history heuristic (cumulative cutoff score keyed by from*64+to). Both feed
+// move ordering to make alpha-beta cuts earlier.
+const KILLERS = [];
+const HISTORY = new Int32Array(64 * 64);
+
+function killerKey(m) { return m.fromRow * 4096 + m.fromCol * 512 + m.toRow * 64 + m.toCol; }
+function historyIdx(m) { return (m.fromRow * 8 + m.fromCol) * 64 + (m.toRow * 8 + m.toCol); }
+function recordKiller(ply, move) {
+  const slot = KILLERS[ply] || (KILLERS[ply] = [null, null]);
+  const k = killerKey(move);
+  if (slot[0] && killerKey(slot[0]) === k) return;
+  slot[1] = slot[0];
+  slot[0] = move;
+}
+
+function moveScore(move, pv, ply) {
   if (pv && move.fromRow === pv.fromRow && move.fromCol === pv.fromCol && move.toRow === pv.toRow && move.toCol === pv.toCol) return 1e9;
   const victim = board[move.toRow][move.toCol];
   const attacker = board[move.fromRow][move.fromCol];
   if (victim) return 100000 + PIECE_VAL[victim.toLowerCase()] * 10 - PIECE_VAL[attacker.toLowerCase()];
   if (attacker && attacker.toLowerCase() === 'p' && (move.toRow === 0 || move.toRow === 7)) return 80000;
-  return 0;
+  if (ply !== undefined && KILLERS[ply]) {
+    const k = killerKey(move);
+    if (KILLERS[ply][0] && killerKey(KILLERS[ply][0]) === k) return 70000;
+    if (KILLERS[ply][1] && killerKey(KILLERS[ply][1]) === k) return 60000;
+  }
+  let pstDelta = 0;
+  if (attacker) {
+    const isWhite = attacker === attacker.toUpperCase();
+    const sign = isWhite ? 1 : -1;
+    const fromIdx = isWhite ? move.fromRow * 8 + move.fromCol : (7 - move.fromRow) * 8 + move.fromCol;
+    const toIdx   = isWhite ? move.toRow   * 8 + move.toCol   : (7 - move.toRow)   * 8 + move.toCol;
+    const t = attacker.toLowerCase();
+    const tbl = t === 'k' ? PST_K_MG : PST_BY_PIECE[t];
+    pstDelta = sign * (tbl[toIdx] - tbl[fromIdx]);
+  }
+  return pstDelta + (HISTORY[historyIdx(move)] | 0);
 }
 
-function orderMoves(moves, pv) {
-  const scored = moves.map(m => ({ m, s: moveScore(m, pv) }));
+function orderMoves(moves, pv, ply) {
+  const scored = moves.map(m => ({ m, s: moveScore(m, pv, ply) }));
   scored.sort((a, b) => b.s - a.s);
   return scored.map(x => x.m);
 }
@@ -344,12 +451,12 @@ function collectMoves(color, capturesOnly) {
 }
 
 function quiescence(alpha, beta, color, ply) {
-  if (ply > 8) return evaluateBoard();
+  if (ply > 10) return evaluateBoard();
   const stand = evaluateBoard();
   const isMax = color === 'white';
   if (isMax) { if (stand >= beta) return beta; if (stand > alpha) alpha = stand; }
   else       { if (stand <= alpha) return alpha; if (stand < beta) beta = stand; }
-  const caps = orderMoves(collectMoves(color, true));
+  const caps = orderMoves(collectMoves(color, true), null, ply + 100);
   for (const move of caps) {
     const sim = simulateMove(move.fromRow, move.fromCol, move.toRow, move.toCol);
     applySimulatedMove(sim);
@@ -613,25 +720,41 @@ function showPromotion(fromRow, fromCol, row, col, color) {
 }
 
 function evaluateBoard() {
+  // Material + PST + bishop pair + tapered king. Centipawn units (P=100).
   let score = 0;
+  let nonPawnNonKingMaterial = 0;
+  let whiteBishops = 0, blackBishops = 0;
+  let wKingR = -1, wKingC = -1, bKingR = -1, bKingC = -1;
   for (let r = 0; r < 8; r++) {
     for (let c = 0; c < 8; c++) {
       const piece = board[r][c];
       if (!piece) continue;
-      const val = PIECE_VALUES[piece.toLowerCase()];
-      if (piece === piece.toUpperCase()) {
-        score += val;
-        if (piece.toLowerCase() === 'p') {
-          score += [0, 0, 0, 0, 0, 1, 2, 0][r];
-        }
-      } else {
-        score -= val;
-        if (piece.toLowerCase() === 'p') {
-          score -= [0, -1, -2, 0, 0, 0, 0, 0][r];
-        }
+      const isWhite = piece === piece.toUpperCase();
+      const t = piece.toLowerCase();
+      if (t === 'k') {
+        if (isWhite) { wKingR = r; wKingC = c; } else { bKingR = r; bKingC = c; }
+        continue;
       }
+      const matVal = PIECE_VAL[t];
+      if (t !== 'p') nonPawnNonKingMaterial += matVal;
+      const idx = isWhite ? r * 8 + c : (7 - r) * 8 + c;
+      const psVal = PST_BY_PIECE[t][idx];
+      const sign = isWhite ? 1 : -1;
+      score += sign * (matVal + psVal);
+      if (t === 'b') { if (isWhite) whiteBishops++; else blackBishops++; }
     }
   }
+  const isEndgame = nonPawnNonKingMaterial < 1700;
+  if (wKingR >= 0) {
+    const idx = wKingR * 8 + wKingC;
+    score += isEndgame ? PST_K_EG[idx] : PST_K_MG[idx];
+  }
+  if (bKingR >= 0) {
+    const idx = (7 - bKingR) * 8 + bKingC;
+    score -= isEndgame ? PST_K_EG[idx] : PST_K_MG[idx];
+  }
+  if (whiteBishops >= 2) score += 30;
+  if (blackBishops >= 2) score -= 30;
   return score;
 }
 
@@ -717,7 +840,8 @@ function undoSimulatedMove(sim) {
   castling = sim.oldCastling;
 }
 
-function minimax(depth, alpha, beta, isMaximizing, color) {
+function minimax(depth, alpha, beta, isMaximizing, color, ply) {
+  if (ply === undefined) ply = 0;
   if (depth === 0) {
     return quiescence(alpha, beta, color, 0);
   }
@@ -726,17 +850,23 @@ function minimax(depth, alpha, beta, isMaximizing, color) {
     if (isInCheck(color)) return isMaximizing ? -10000 - depth : 10000 + depth;
     return 0;
   }
-  const ordered = orderMoves(allMoves);
+  const ordered = orderMoves(allMoves, null, ply);
   if (isMaximizing) {
     let maxEval = -Infinity;
     for (const move of ordered) {
       const sim = simulateMove(move.fromRow, move.fromCol, move.toRow, move.toCol);
       applySimulatedMove(sim);
-      const evalScore = minimax(depth - 1, alpha, beta, false, color === 'white' ? 'black' : 'white');
+      const evalScore = minimax(depth - 1, alpha, beta, false, color === 'white' ? 'black' : 'white', ply + 1);
       undoSimulatedMove(sim);
       if (evalScore > maxEval) maxEval = evalScore;
       if (evalScore > alpha) alpha = evalScore;
-      if (beta <= alpha) break;
+      if (beta <= alpha) {
+        if (!sim.captured && !sim.isCastle) {
+          recordKiller(ply, move);
+          HISTORY[historyIdx(move)] += depth * depth;
+        }
+        break;
+      }
     }
     return maxEval;
   } else {
@@ -744,11 +874,17 @@ function minimax(depth, alpha, beta, isMaximizing, color) {
     for (const move of ordered) {
       const sim = simulateMove(move.fromRow, move.fromCol, move.toRow, move.toCol);
       applySimulatedMove(sim);
-      const evalScore = minimax(depth - 1, alpha, beta, true, color === 'white' ? 'black' : 'white');
+      const evalScore = minimax(depth - 1, alpha, beta, true, color === 'white' ? 'black' : 'white', ply + 1);
       undoSimulatedMove(sim);
       if (evalScore < minEval) minEval = evalScore;
       if (evalScore < beta) beta = evalScore;
-      if (beta <= alpha) break;
+      if (beta <= alpha) {
+        if (!sim.captured && !sim.isCastle) {
+          recordKiller(ply, move);
+          HISTORY[historyIdx(move)] += depth * depth;
+        }
+        break;
+      }
     }
     return minEval;
   }
@@ -780,14 +916,20 @@ function recordUci(fromR, fromC, toR, toC, promoChar) {
 function bestMoveAtDepth(depth, pv) {
   const allMoves = collectMoves(turn, false);
   if (allMoves.length === 0) return null;
-  const ordered = orderMoves(allMoves, pv);
+  const ordered = orderMoves(allMoves, pv, 0);
   let bestMove = null;
   let bestScore = turn === 'white' ? -Infinity : Infinity;
   let alpha = -Infinity, beta = Infinity;
+  const sideSign = turn === 'white' ? 1 : -1;
   for (const move of ordered) {
     const sim = simulateMove(move.fromRow, move.fromCol, move.toRow, move.toCol);
     applySimulatedMove(sim);
-    const score = minimax(depth - 1, alpha, beta, turn === 'black', turn === 'white' ? 'black' : 'white');
+    let score = minimax(depth - 1, alpha, beta, turn === 'black', turn === 'white' ? 'black' : 'white', 1);
+    // Repetition penalty: discourage moves that revisit a real-game position.
+    const key = positionKey();
+    const prevCount = positionCounts.get(key) || 0;
+    if (prevCount >= 2) score -= sideSign * 30000;
+    else if (prevCount >= 1) score -= sideSign * 60;
     undoSimulatedMove(sim);
     if (turn === 'white') {
       if (score > bestScore) { bestScore = score; bestMove = move; }
@@ -801,8 +943,10 @@ function bestMoveAtDepth(depth, pv) {
 }
 
 function findLegalSearchMove(maxDepth) {
-  const md = maxDepth || players[turn].depth || 2;
+  const md = maxDepth || players[turn].depth || 3;
   if (collectMoves(turn, false).length === 0) return null;
+  KILLERS.length = 0;
+  HISTORY.fill(0);
   let pv = null;
   for (let d = 1; d <= md; d++) {
     thinkingDepth = d;
@@ -814,8 +958,10 @@ function findLegalSearchMove(maxDepth) {
 }
 
 async function findLegalSearchMoveAsync(maxDepth) {
-  const md = maxDepth || players[turn].depth || 2;
+  const md = maxDepth || players[turn].depth || 3;
   if (collectMoves(turn, false).length === 0) return null;
+  KILLERS.length = 0;
+  HISTORY.fill(0);
   let pv = null;
   for (let d = 1; d <= md; d++) {
     thinkingDepth = d;
