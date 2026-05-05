@@ -1,0 +1,1337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chess (standalone)</title>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #1a1a2e; color: #eee; font-family: Arial, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
+  h1 { margin-bottom: 10px; font-size: 2rem; }
+  #controls { display: flex; gap: 12px; margin-bottom: 15px; align-items: flex-start; flex-wrap: wrap; justify-content: center; }
+  .player-config { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .player-config > .label { font-weight: bold; color: #c0c0e0; }
+  #controls select { padding: 8px 12px; font-size: 0.95rem; background: #3a3a5a; color: #fff; border: 2px solid #6a6aaa; border-radius: 6px; cursor: pointer; }
+  #controls select:hover { background: #5a5a8a; }
+  #controls select:disabled { opacity: 0.5; cursor: not-allowed; }
+  .model-loader { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+  .model-loader input[type="file"] { font-size: 0.8rem; color: #ddd; background: #3a3a5a; border: 2px solid #6a6aaa; border-radius: 6px; padding: 4px 6px; max-width: 220px; }
+  .model-loader input[type="file"]::file-selector-button { background: #5a5a8a; color: #fff; border: 0; padding: 4px 10px; border-radius: 4px; cursor: pointer; margin-right: 8px; }
+  .model-status { font-size: 0.75rem; color: #b0b0d0; max-width: 220px; }
+  .model-status.ready { color: #80ffb0; }
+  .model-status.error { color: #ff8080; }
+  .hidden { display: none !important; }
+  #status { margin-bottom: 6px; font-size: 1.2rem; height: 24px; text-align: center; }
+  #llm-stats { margin-bottom: 12px; font-size: 0.85rem; color: #b0b0d0; min-height: 18px; text-align: center; }
+  #llm-stats .flash { color: #ffd080; }
+  #board { display: grid; grid-template-columns: repeat(8, 60px); grid-template-rows: repeat(8, 60px); border: 4px solid #4a4a6a; }
+  .square { width: 60px; height: 60px; display: flex; align-items: center; justify-content: center; font-size: 42px; cursor: pointer; position: relative; }
+  .light { background: #f0d9b5; }
+  .dark { background: #b58863; }
+  .selected { box-shadow: inset 0 0 0 3px #ffff00; }
+  .possible { box-shadow: inset 0 0 0 3px #00ff00; }
+  .check { background: #e74c3c !important; }
+  .piece { user-select: none; line-height: 1; }
+  .white-piece { color: #fff; text-shadow: 0 1px 3px #000, 0 -1px 3px #000, 1px 0 3px #000, -1px 0 3px #000; }
+  .black-piece { color: #111; text-shadow: 0 1px 2px #fff, 0 -1px 2px #fff, 1px 0 2px #fff, -1px 0 2px #fff; }
+  #promotion-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); align-items: center; justify-content: center; z-index: 10; }
+  #promotion-overlay.active { display: flex; }
+  #promotion-choices { background: #2a2a4a; border: 3px solid #6a6aaa; border-radius: 10px; padding: 20px; display: flex; gap: 15px; }
+  .promo-btn { font-size: 48px; width: 70px; height: 70px; border: 2px solid #6a6aaa; border-radius: 8px; background: #3a3a5a; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  .promo-btn:hover { background: #5a5a8a; }
+  #reset-btn { margin-top: 15px; padding: 10px 30px; font-size: 1rem; background: #4a4a8a; color: #fff; border: 2px solid #6a6aaa; border-radius: 6px; cursor: pointer; }
+  #reset-btn:hover { background: #6a6aaa; }
+  .disabled { pointer-events: none; opacity: 0.6; }
+  #ort-status { margin-top: 10px; font-size: 0.75rem; color: #909; color: #909abc; text-align: center; }
+</style>
+</head>
+<body>
+<h1>Chess</h1>
+<div id="controls">
+  <div class="player-config" data-color="white">
+    <span class="label">White:</span>
+    <select class="player-type" data-color="white">
+      <option value="human" selected>Human</option>
+      <option value="search">Search</option>
+      <option value="llm" disabled>LLM (load .onnx)</option>
+    </select>
+    <select class="depth-picker hidden" data-color="white">
+      <option value="1">Depth 1</option>
+      <option value="2" selected>Depth 2</option>
+      <option value="3">Depth 3</option>
+      <option value="4">Depth 4</option>
+      <option value="5">Depth 5</option>
+      <option value="6">Depth 6</option>
+      <option value="7">Depth 7</option>
+    </select>
+    <div class="model-loader" data-color="white">
+      <input type="file" class="model-file" accept=".onnx" data-color="white">
+      <span class="model-status" data-color="white">No model loaded</span>
+    </div>
+  </div>
+  <div class="player-config" data-color="black">
+    <span class="label">Black:</span>
+    <select class="player-type" data-color="black">
+      <option value="human">Human</option>
+      <option value="search" selected>Search</option>
+      <option value="llm" disabled>LLM (load .onnx)</option>
+    </select>
+    <select class="depth-picker" data-color="black">
+      <option value="1">Depth 1</option>
+      <option value="2" selected>Depth 2</option>
+      <option value="3">Depth 3</option>
+      <option value="4">Depth 4</option>
+      <option value="5">Depth 5</option>
+      <option value="6">Depth 6</option>
+      <option value="7">Depth 7</option>
+    </select>
+    <div class="model-loader" data-color="black">
+      <input type="file" class="model-file" accept=".onnx" data-color="black">
+      <span class="model-status" data-color="black">No model loaded</span>
+    </div>
+  </div>
+</div>
+<div id="status">White to move</div>
+<div id="llm-stats"></div>
+<div id="board"></div>
+<button id="reset-btn">New Game</button>
+<div id="ort-status">Loading ONNX Runtime Web…</div>
+<div id="promotion-overlay">
+  <div id="promotion-choices"></div>
+</div>
+<script>
+// =========================================================================
+// Chess engine + UI (unchanged from chess.html, with the server fetch removed)
+// =========================================================================
+const PIECES = { r: '♜', n: '♞', b: '♝', q: '♛', k: '♚', p: '♟', R: '♜', N: '♞', B: '♝', Q: '♛', K: '♚', P: '♟' };
+const PIECE_VALUES = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
+
+let board, turn, selected, possibleMoves, gameOver, castling, enPassant, halfMoveClock, fullMoveNumber;
+let computerThinking;
+let players = { white: { type: 'human' }, black: { type: 'search', depth: 2 } };
+let uciHistory = [];
+let llmStats = {
+  white: { tries: 0, fallbacks: 0, sumRank: 0, maxRank: 0, lastRank: 0 },
+  black: { tries: 0, fallbacks: 0, sumRank: 0, maxRank: 0, lastRank: 0 }
+};
+let thinkingStartMs = 0;
+let thinkingDepth = 0;
+let thinkingMaxDepth = 0;
+let thinkingTimerId = null;
+let positionCounts = new Map();
+
+function readPlayerConfig(color) {
+  const typeSel = document.querySelector(`.player-type[data-color="${color}"]`);
+  const depthSel = document.querySelector(`.depth-picker[data-color="${color}"]`);
+  const type = typeSel.value;
+  const cfg = { type };
+  if (type === 'search') cfg.depth = parseInt(depthSel.value);
+  return cfg;
+}
+
+function init() {
+  board = [
+    ['r','n','b','q','k','b','n','r'],
+    ['p','p','p','p','p','p','p','p'],
+    ['','','','','','','',''],
+    ['','','','','','','',''],
+    ['','','','','','','',''],
+    ['','','','','','','',''],
+    ['P','P','P','P','P','P','P','P'],
+    ['R','N','B','Q','K','B','N','R']
+  ];
+  turn = 'white';
+  selected = null;
+  possibleMoves = [];
+  gameOver = false;
+  castling = { white: { kingSide: true, queenSide: true }, black: { kingSide: true, queenSide: true } };
+  enPassant = null;
+  halfMoveClock = 0;
+  fullMoveNumber = 1;
+  uciHistory = [];
+  players.white = readPlayerConfig('white');
+  players.black = readPlayerConfig('black');
+  llmStats = {
+    white: { tries: 0, fallbacks: 0, sumRank: 0, maxRank: 0, lastRank: 0 },
+    black: { tries: 0, fallbacks: 0, sumRank: 0, maxRank: 0, lastRank: 0 }
+  };
+  computerThinking = false;
+  stopThinkingClock();
+  positionCounts = new Map();
+  recordPosition();
+  render();
+  updateStatus();
+  updateLlmStats();
+  maybeTriggerEngine();
+}
+
+function updateLlmStats(flashMsg) {
+  const el = document.getElementById('llm-stats');
+  if (!el) return;
+  const anyLlm = players.white.type === 'llm' || players.black.type === 'llm';
+  if (!anyLlm && !flashMsg) { el.textContent = ''; return; }
+  const fmt = (label, s) => {
+    const legalTries = s.tries - s.fallbacks;
+    const avg = legalTries > 0 ? (s.sumRank / legalTries).toFixed(2) : '—';
+    const last = s.lastRank > 0 ? s.lastRank : (s.fallbacks > 0 && s.lastRank === 0 ? 'search' : '—');
+    return `${label}: ${s.tries} moves · last rank ${last} · avg ${avg} · max ${s.maxRank || '—'} · fallbacks ${s.fallbacks}`;
+  };
+  const parts = [];
+  if (players.white.type === 'llm') parts.push(fmt('White LLM', llmStats.white));
+  if (players.black.type === 'llm') parts.push(fmt('Black LLM', llmStats.black));
+  const base = parts.join('<br>');
+  el.innerHTML = flashMsg ? `${base}<br><span class="flash">${flashMsg}</span>` : base;
+}
+
+function maybeTriggerEngine() {
+  if (gameOver) return;
+  if (players[turn].type !== 'human') {
+    setTimeout(() => engineMove(turn), 300);
+  }
+}
+
+function render() {
+  const boardEl = document.getElementById('board');
+  boardEl.innerHTML = '';
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      const sq = document.createElement('div');
+      sq.className = 'square ' + ((r + c) % 2 === 0 ? 'light' : 'dark');
+      sq.dataset.row = r;
+      sq.dataset.col = c;
+      if (selected && selected.row === r && selected.col === c) sq.classList.add('selected');
+      if (possibleMoves.some(m => m.row === r && m.col === c)) sq.classList.add('possible');
+      if (board[r][c]) {
+        const piece = document.createElement('span');
+        piece.className = 'piece ' + (board[r][c] === board[r][c].toUpperCase() ? 'white-piece' : 'black-piece');
+        piece.textContent = PIECES[board[r][c]];
+        sq.appendChild(piece);
+      }
+      sq.addEventListener('click', () => onSquareClick(r, c));
+      boardEl.appendChild(sq);
+    }
+  }
+  highlightCheck();
+  if (!gameOver && players[turn] && players[turn].type === 'human') {
+    boardEl.classList.remove('disabled');
+  } else {
+    boardEl.classList.add('disabled');
+  }
+}
+
+function highlightCheck() {
+  const king = turn === 'white' ? 'K' : 'k';
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      if (board[r][c] === king && isSquareAttacked(r, c, turn === 'white' ? 'black' : 'white')) {
+        const idx = r * 8 + c;
+        document.querySelectorAll('.square')[idx].classList.add('check');
+      }
+    }
+  }
+}
+
+function updateStatus() {
+  const status = document.getElementById('status');
+  if (gameOver) return;
+  if (computerThinking) {
+    const who = turn === 'white' ? 'White' : 'Black';
+    const elapsed = thinkingStartMs ? ((Date.now() - thinkingStartMs) / 1000).toFixed(1) : '0.0';
+    const dtag = thinkingDepth ? ` · depth ${thinkingDepth}/${thinkingMaxDepth}` : '';
+    status.textContent = `${who} is thinking... ${elapsed}s${dtag}`;
+    return;
+  }
+  const inCheck = isInCheck(turn);
+  const hasMoves = hasLegalMoves(turn);
+  if (inCheck && !hasMoves) {
+    status.textContent = (turn === 'white' ? 'White' : 'Black') + ' is checkmated! ' + (turn === 'white' ? 'Black' : 'White') + ' wins!';
+    gameOver = true; return;
+  }
+  if (!inCheck && !hasMoves) {
+    status.textContent = 'Stalemate! Draw.';
+    gameOver = true; return;
+  }
+  const draw = detectNonMateDraw();
+  if (draw) { status.textContent = draw; gameOver = true; return; }
+  if (inCheck) {
+    status.textContent = (turn === 'white' ? 'White' : 'Black') + ' is in check!';
+  } else {
+    status.textContent = (turn === 'white' ? 'White' : 'Black') + ' to move';
+  }
+}
+
+function startThinkingClock() {
+  thinkingStartMs = Date.now();
+  if (thinkingTimerId) clearInterval(thinkingTimerId);
+  thinkingTimerId = setInterval(updateStatus, 200);
+}
+
+function stopThinkingClock() {
+  if (thinkingTimerId) { clearInterval(thinkingTimerId); thinkingTimerId = null; }
+  thinkingStartMs = 0;
+  thinkingDepth = 0;
+  thinkingMaxDepth = 0;
+}
+
+function positionKey() {
+  let b = '';
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) b += board[r][c] || '.';
+  const c = (castling.white.kingSide?'K':'') + (castling.white.queenSide?'Q':'') + (castling.black.kingSide?'k':'') + (castling.black.queenSide?'q':'') || '-';
+  const ep = enPassant ? `${enPassant.row},${enPassant.col}` : '-';
+  return `${b}|${turn}|${c}|${ep}`;
+}
+
+function recordPosition() {
+  const key = positionKey();
+  positionCounts.set(key, (positionCounts.get(key) || 0) + 1);
+  return positionCounts.get(key);
+}
+
+function isInsufficientMaterial() {
+  const pieces = { white: [], black: [] };
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+    const p = board[r][c]; if (!p) continue;
+    const t = p.toLowerCase();
+    if (t === 'k') continue;
+    if (t === 'p' || t === 'r' || t === 'q') return false;
+    const side = p === p.toUpperCase() ? 'white' : 'black';
+    pieces[side].push({ t, sq: (r + c) % 2 });
+  }
+  const w = pieces.white, b = pieces.black;
+  if (w.length === 0 && b.length === 0) return true;
+  if ((w.length === 1 && b.length === 0) || (b.length === 1 && w.length === 0)) return true;
+  if (w.length === 1 && b.length === 1 && w[0].t === 'b' && b[0].t === 'b' && w[0].sq === b[0].sq) return true;
+  return false;
+}
+
+function detectNonMateDraw() {
+  if (halfMoveClock >= 100) return 'Draw: 50-move rule.';
+  if (isInsufficientMaterial()) return 'Draw: insufficient material.';
+  const count = positionCounts.get(positionKey()) || 0;
+  if (count >= 3) return 'Draw: threefold repetition.';
+  return null;
+}
+
+const PIECE_VAL = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 20000 };
+
+function moveScore(move, pv) {
+  if (pv && move.fromRow === pv.fromRow && move.fromCol === pv.fromCol && move.toRow === pv.toRow && move.toCol === pv.toCol) return 1e9;
+  const victim = board[move.toRow][move.toCol];
+  const attacker = board[move.fromRow][move.fromCol];
+  if (victim) return 100000 + PIECE_VAL[victim.toLowerCase()] * 10 - PIECE_VAL[attacker.toLowerCase()];
+  if (attacker && attacker.toLowerCase() === 'p' && (move.toRow === 0 || move.toRow === 7)) return 80000;
+  return 0;
+}
+
+function orderMoves(moves, pv) {
+  const scored = moves.map(m => ({ m, s: moveScore(m, pv) }));
+  scored.sort((a, b) => b.s - a.s);
+  return scored.map(x => x.m);
+}
+
+function collectMoves(color, capturesOnly) {
+  const out = [];
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+    const p = board[r][c]; if (!p) continue;
+    if ((color === 'white' && p !== p.toUpperCase()) || (color === 'black' && p !== p.toLowerCase())) continue;
+    for (const m of getLegalMoves(r, c)) {
+      if (capturesOnly && !board[m.row][m.col]) continue;
+      out.push({ fromRow: r, fromCol: c, toRow: m.row, toCol: m.col });
+    }
+  }
+  return out;
+}
+
+function quiescence(alpha, beta, color, ply) {
+  if (ply > 8) return evaluateBoard();
+  const stand = evaluateBoard();
+  const isMax = color === 'white';
+  if (isMax) { if (stand >= beta) return beta; if (stand > alpha) alpha = stand; }
+  else       { if (stand <= alpha) return alpha; if (stand < beta) beta = stand; }
+  const caps = orderMoves(collectMoves(color, true));
+  for (const move of caps) {
+    const sim = simulateMove(move.fromRow, move.fromCol, move.toRow, move.toCol);
+    applySimulatedMove(sim);
+    const score = quiescence(alpha, beta, color === 'white' ? 'black' : 'white', ply + 1);
+    undoSimulatedMove(sim);
+    if (isMax) { if (score >= beta) return beta; if (score > alpha) alpha = score; }
+    else       { if (score <= alpha) return alpha; if (score < beta) beta = score; }
+  }
+  return isMax ? alpha : beta;
+}
+
+function isInCheck(color) {
+  const king = color === 'white' ? 'K' : 'k';
+  let kingPos = null;
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      if (board[r][c] === king) { kingPos = { row: r, col: c }; break; }
+    }
+    if (kingPos) break;
+  }
+  if (!kingPos) return false;
+  return isSquareAttacked(kingPos.row, kingPos.col, color === 'white' ? 'black' : 'white');
+}
+
+function isSquareAttacked(row, col, byColor) {
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      const piece = board[r][c];
+      if (!piece) continue;
+      if ((byColor === 'white' && piece !== piece.toUpperCase()) || (byColor === 'black' && piece !== piece.toLowerCase())) continue;
+      const moves = getRawMoves(r, c, piece, true);
+      if (moves.some(m => m.row === row && m.col === col)) return true;
+    }
+  }
+  return false;
+}
+
+function hasLegalMoves(color) {
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      const piece = board[r][c];
+      if (!piece) continue;
+      if ((color === 'white' && piece !== piece.toUpperCase()) || (color === 'black' && piece !== piece.toLowerCase())) continue;
+      if (getLegalMoves(r, c).length > 0) return true;
+    }
+  }
+  return false;
+}
+
+function getLegalMoves(row, col) {
+  const piece = board[row][col];
+  const raw = getRawMoves(row, col, piece, false);
+  return raw.filter(m => !causesCheck(row, col, m.row, m.col));
+}
+
+function causesCheck(fromRow, fromCol, toRow, toCol) {
+  const piece = board[fromRow][fromCol];
+  const captured = board[toRow][toCol];
+  const isEnPassant = enPassant && toRow === enPassant.row && toCol === enPassant.col && piece.toLowerCase() === 'p';
+  let capturedEnPassant = null;
+  if (isEnPassant) {
+    capturedEnPassant = board[fromRow][toCol];
+    board[fromRow][toCol] = '';
+  }
+  board[toRow][toCol] = piece;
+  board[fromRow][fromCol] = '';
+  const inCheck = isInCheck(piece === piece.toUpperCase() ? 'white' : 'black');
+  board[fromRow][fromCol] = piece;
+  board[toRow][toCol] = captured;
+  if (isEnPassant) board[fromRow][toCol] = capturedEnPassant;
+  return inCheck;
+}
+
+function getRawMoves(row, col, piece, attackOnly) {
+  const moves = [];
+  const color = piece === piece.toUpperCase() ? 'white' : 'black';
+  const type = piece.toLowerCase();
+  const dirs = {
+    p: color === 'white' ? [[-1,0],[-2,0],[0,-1],[0,1],[-1,-1],[-1,1]] : [[1,0],[2,0],[0,-1],[0,1],[1,-1],[1,1]],
+    n: [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]],
+    b: [[-1,-1],[-1,1],[1,-1],[1,1]],
+    r: [[-1,0],[1,0],[0,-1],[0,1]],
+    q: [[-1,-1],[-1,1],[1,-1],[1,1],[-1,0],[1,0],[0,-1],[0,1]],
+    k: [[-1,-1],[-1,1],[1,-1],[1,1],[-1,0],[1,0],[0,-1],[0,1]]
+  };
+  const d = dirs[type];
+  if (type === 'p') {
+    for (let i = 0; i < d.length; i++) {
+      const nr = row + d[i][0], nc = col + d[i][1];
+      if (nr < 0 || nr > 7 || nc < 0 || nc > 7) continue;
+      if (i < 2) {
+        if (!attackOnly && !board[nr][nc]) {
+          if (i === 1 && ((color === 'white' && row !== 6) || (color === 'black' && row !== 1))) continue;
+          moves.push({ row: nr, col: nc });
+        }
+      } else if (i === 2 || i === 3) {
+        if (!attackOnly && enPassant && nr === enPassant.row && nc === enPassant.col) {
+          moves.push({ row: nr, col: nc });
+        }
+      } else {
+        if (board[nr][nc] && ((color === 'white' && board[nr][nc] === board[nr][nc].toLowerCase()) || (color === 'black' && board[nr][nc] === board[nr][nc].toUpperCase()))) {
+          moves.push({ row: nr, col: nc });
+        }
+      }
+    }
+  } else if (type === 'n') {
+    for (const [dr, dc] of d) {
+      const nr = row + dr, nc = col + dc;
+      if (nr < 0 || nr > 7 || nc < 0 || nc > 7) continue;
+      if (!board[nr][nc] || ((color === 'white' && board[nr][nc] === board[nr][nc].toLowerCase()) || (color === 'black' && board[nr][nc] === board[nr][nc].toUpperCase()))) {
+        moves.push({ row: nr, col: nc });
+      }
+    }
+  } else if (type === 'k') {
+    for (const [dr, dc] of d) {
+      const nr = row + dr, nc = col + dc;
+      if (nr < 0 || nr > 7 || nc < 0 || nc > 7) continue;
+      if (!board[nr][nc] || ((color === 'white' && board[nr][nc] === board[nr][nc].toLowerCase()) || (color === 'black' && board[nr][nc] === board[nr][nc].toUpperCase()))) {
+        moves.push({ row: nr, col: nc });
+      }
+    }
+    if (!attackOnly) {
+      const row8 = color === 'white' ? 7 : 0;
+      if (castling[color].kingSide && !board[row8][5] && !board[row8][6] && !isSquareAttacked(row8, 4, color === 'white' ? 'black' : 'white') && !isSquareAttacked(row8, 5, color === 'white' ? 'black' : 'white') && !isSquareAttacked(row8, 6, color === 'white' ? 'black' : 'white')) {
+        moves.push({ row: row8, col: 6, castle: 'kingSide' });
+      }
+      if (castling[color].queenSide && !board[row8][3] && !board[row8][2] && !board[row8][1] && !isSquareAttacked(row8, 4, color === 'white' ? 'black' : 'white') && !isSquareAttacked(row8, 3, color === 'white' ? 'black' : 'white') && !isSquareAttacked(row8, 2, color === 'white' ? 'black' : 'white')) {
+        moves.push({ row: row8, col: 2, castle: 'queenSide' });
+      }
+    }
+  } else {
+    for (const [dr, dc] of d) {
+      let nr = row + dr, nc = col + dc;
+      while (nr >= 0 && nr <= 7 && nc >= 0 && nc <= 7) {
+        if (!board[nr][nc]) {
+          moves.push({ row: nr, col: nc });
+        } else {
+          if ((color === 'white' && board[nr][nc] === board[nr][nc].toLowerCase()) || (color === 'black' && board[nr][nc] === board[nr][nc].toUpperCase())) {
+            moves.push({ row: nr, col: nc });
+          }
+          break;
+        }
+        nr += dr;
+        nc += dc;
+      }
+    }
+  }
+  return moves;
+}
+
+function onSquareClick(row, col) {
+  if (gameOver) return;
+  if (players[turn].type !== 'human') return;
+  const piece = board[row][col];
+  if (selected) {
+    const move = possibleMoves.find(m => m.row === row && m.col === col);
+    if (move) {
+      makeMove(selected.row, selected.col, move);
+      selected = null;
+      possibleMoves = [];
+      render();
+      updateStatus();
+      maybeTriggerEngine();
+      return;
+    }
+  }
+  if (piece && ((turn === 'white' && piece === piece.toUpperCase()) || (turn === 'black' && piece === piece.toLowerCase()))) {
+    selected = { row, col };
+    possibleMoves = getLegalMoves(row, col);
+  } else {
+    selected = null;
+    possibleMoves = [];
+  }
+  render();
+}
+
+function makeMove(fromRow, fromCol, move) {
+  const piece = board[fromRow][fromCol];
+  const captured = board[move.row][move.col];
+  const color = piece === piece.toUpperCase() ? 'white' : 'black';
+  const isEnPassant = enPassant && move.row === enPassant.row && move.col === enPassant.col && piece.toLowerCase() === 'p';
+  if (move.castle) {
+    const row8 = color === 'white' ? 7 : 0;
+    if (move.castle === 'kingSide') {
+      board[row8][5] = board[row8][7];
+      board[row8][7] = '';
+    } else {
+      board[row8][3] = board[row8][0];
+      board[row8][0] = '';
+    }
+  }
+  if (isEnPassant) {
+    board[fromRow][move.col] = '';
+  }
+  board[move.row][move.col] = piece;
+  board[fromRow][fromCol] = '';
+  if (piece.toLowerCase() === 'p' || captured || move.castle || isEnPassant) { halfMoveClock = 0; positionCounts.clear(); }
+  else halfMoveClock++;
+  if (piece.toLowerCase() === 'k') {
+    castling[color].kingSide = false;
+    castling[color].queenSide = false;
+  }
+  if (piece.toLowerCase() === 'r') {
+    if (fromCol === 0) castling[color].queenSide = false;
+    if (fromCol === 7) castling[color].kingSide = false;
+  }
+  if (color === 'black') fullMoveNumber++;
+  enPassant = null;
+  if (piece.toLowerCase() === 'p' && Math.abs(move.row - fromRow) === 2) {
+    enPassant = { row: (fromRow + move.row) / 2, col: fromCol };
+  }
+  if (piece.toLowerCase() === 'p' && (move.row === 0 || move.row === 7)) {
+    if (move.promo) {
+      const p = color === 'white' ? move.promo.toUpperCase() : move.promo.toLowerCase();
+      board[move.row][move.col] = p;
+      recordUci(fromRow, fromCol, move.row, move.col, move.promo);
+      turn = turn === 'white' ? 'black' : 'white';
+      positionCounts.clear(); recordPosition();
+      return;
+    }
+    if (players[turn].type !== 'human') {
+      board[move.row][move.col] = color === 'white' ? 'Q' : 'q';
+      recordUci(fromRow, fromCol, move.row, move.col, 'q');
+      turn = turn === 'white' ? 'black' : 'white';
+      positionCounts.clear(); recordPosition();
+      return;
+    }
+    showPromotion(fromRow, fromCol, move.row, move.col, color);
+    return;
+  }
+  recordUci(fromRow, fromCol, move.row, move.col, '');
+  turn = turn === 'white' ? 'black' : 'white';
+  recordPosition();
+}
+
+function showPromotion(fromRow, fromCol, row, col, color) {
+  const overlay = document.getElementById('promotion-overlay');
+  const choices = document.getElementById('promotion-choices');
+  choices.innerHTML = '';
+  const pieces = color === 'white' ? ['Q', 'R', 'B', 'N'] : ['q', 'r', 'b', 'n'];
+  pieces.forEach(p => {
+    const btn = document.createElement('button');
+    btn.className = 'promo-btn';
+    const span = document.createElement('span');
+    span.className = 'piece ' + (color === 'white' ? 'white-piece' : 'black-piece');
+    span.textContent = PIECES[p];
+    btn.appendChild(span);
+    btn.addEventListener('click', () => {
+      board[row][col] = p;
+      overlay.classList.remove('active');
+      recordUci(fromRow, fromCol, row, col, p.toLowerCase());
+      turn = turn === 'white' ? 'black' : 'white';
+      positionCounts.clear(); recordPosition();
+      render();
+      updateStatus();
+      maybeTriggerEngine();
+    });
+    choices.appendChild(btn);
+  });
+  overlay.classList.add('active');
+}
+
+function evaluateBoard() {
+  let score = 0;
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      const piece = board[r][c];
+      if (!piece) continue;
+      const val = PIECE_VALUES[piece.toLowerCase()];
+      if (piece === piece.toUpperCase()) {
+        score += val;
+        if (piece.toLowerCase() === 'p') {
+          score += [0, 0, 0, 0, 0, 1, 2, 0][r];
+        }
+      } else {
+        score -= val;
+        if (piece.toLowerCase() === 'p') {
+          score -= [0, -1, -2, 0, 0, 0, 0, 0][r];
+        }
+      }
+    }
+  }
+  return score;
+}
+
+function simulateMove(fromRow, fromCol, toRow, toCol) {
+  const piece = board[fromRow][fromCol];
+  const captured = board[toRow][toCol];
+  const isEnPassant = enPassant && toRow === enPassant.row && toCol === enPassant.col && piece.toLowerCase() === 'p';
+  const capturedEnPassant = isEnPassant ? board[fromRow][toCol] : null;
+  const isCastle = piece.toLowerCase() === 'k' && Math.abs(toCol - fromCol) === 2;
+  const castleSide = isCastle ? (toCol === 6 ? 'kingSide' : 'queenSide') : null;
+  const isPromotion = piece.toLowerCase() === 'p' && (toRow === 0 || toRow === 7);
+  return {
+    fromRow, fromCol, toRow, toCol, piece, captured, capturedEnPassant,
+    isEnPassant, isCastle, castleSide, isPromotion,
+    oldEnPassant: enPassant,
+    oldCastling: { white: { ...castling.white }, black: { ...castling.black } }
+  };
+}
+
+function applySimulatedMove(sim) {
+  const piece = sim.piece;
+  const color = piece === piece.toUpperCase() ? 'white' : 'black';
+  if (sim.isEnPassant) {
+    board[sim.fromRow][sim.toCol] = '';
+  }
+  if (sim.isCastle) {
+    const row8 = color === 'white' ? 7 : 0;
+    if (sim.castleSide === 'kingSide') {
+      board[row8][5] = board[row8][7];
+      board[row8][7] = '';
+    } else {
+      board[row8][3] = board[row8][0];
+      board[row8][0] = '';
+    }
+  }
+  if (sim.isPromotion) {
+    board[sim.toRow][sim.toCol] = color === 'white' ? 'Q' : 'q';
+  } else {
+    board[sim.toRow][sim.toCol] = piece;
+  }
+  board[sim.fromRow][sim.fromCol] = '';
+  const newCastling = { white: { ...castling.white }, black: { ...castling.black } };
+  if (piece.toLowerCase() === 'k') {
+    newCastling[color].kingSide = false;
+    newCastling[color].queenSide = false;
+  }
+  if (piece.toLowerCase() === 'r') {
+    if (sim.fromCol === 0) newCastling[color].queenSide = false;
+    if (sim.fromCol === 7) newCastling[color].kingSide = false;
+  }
+  if (sim.captured && sim.captured.toLowerCase() === 'r') {
+    const opColor = color === 'white' ? 'black' : 'white';
+    const opRow = opColor === 'white' ? 7 : 0;
+    if (sim.toRow === opRow && sim.toCol === 0) newCastling[opColor].queenSide = false;
+    if (sim.toRow === opRow && sim.toCol === 7) newCastling[opColor].kingSide = false;
+  }
+  castling = newCastling;
+  enPassant = null;
+  if (piece.toLowerCase() === 'p' && Math.abs(sim.toRow - sim.fromRow) === 2) {
+    enPassant = { row: (sim.fromRow + sim.toRow) / 2, col: sim.fromCol };
+  }
+}
+
+function undoSimulatedMove(sim) {
+  const piece = sim.piece;
+  const color = piece === piece.toUpperCase() ? 'white' : 'black';
+  board[sim.fromRow][sim.fromCol] = piece;
+  board[sim.toRow][sim.toCol] = sim.captured;
+  if (sim.isEnPassant) {
+    board[sim.fromRow][sim.toCol] = sim.capturedEnPassant;
+  }
+  if (sim.isCastle) {
+    const row8 = color === 'white' ? 7 : 0;
+    if (sim.castleSide === 'kingSide') {
+      board[row8][7] = board[row8][5];
+      board[row8][5] = '';
+    } else {
+      board[row8][0] = board[row8][3];
+      board[row8][3] = '';
+    }
+  }
+  enPassant = sim.oldEnPassant;
+  castling = sim.oldCastling;
+}
+
+function minimax(depth, alpha, beta, isMaximizing, color) {
+  if (depth === 0) {
+    return quiescence(alpha, beta, color, 0);
+  }
+  const allMoves = collectMoves(color, false);
+  if (allMoves.length === 0) {
+    if (isInCheck(color)) return isMaximizing ? -10000 - depth : 10000 + depth;
+    return 0;
+  }
+  const ordered = orderMoves(allMoves);
+  if (isMaximizing) {
+    let maxEval = -Infinity;
+    for (const move of ordered) {
+      const sim = simulateMove(move.fromRow, move.fromCol, move.toRow, move.toCol);
+      applySimulatedMove(sim);
+      const evalScore = minimax(depth - 1, alpha, beta, false, color === 'white' ? 'black' : 'white');
+      undoSimulatedMove(sim);
+      if (evalScore > maxEval) maxEval = evalScore;
+      if (evalScore > alpha) alpha = evalScore;
+      if (beta <= alpha) break;
+    }
+    return maxEval;
+  } else {
+    let minEval = Infinity;
+    for (const move of ordered) {
+      const sim = simulateMove(move.fromRow, move.fromCol, move.toRow, move.toCol);
+      applySimulatedMove(sim);
+      const evalScore = minimax(depth - 1, alpha, beta, true, color === 'white' ? 'black' : 'white');
+      undoSimulatedMove(sim);
+      if (evalScore < minEval) minEval = evalScore;
+      if (evalScore < beta) beta = evalScore;
+      if (beta <= alpha) break;
+    }
+    return minEval;
+  }
+}
+
+function coordsToUci(fromR, fromC, toR, toC, promoChar) {
+  const files = 'abcdefgh';
+  const fromStr = files[fromC] + (8 - fromR);
+  const toStr = files[toC] + (8 - toR);
+  return fromStr + toStr + (promoChar || '');
+}
+
+function uciToCoords(uci) {
+  if (!uci || uci.length < 4) return null;
+  const fromCol = uci.charCodeAt(0) - 97;
+  const fromRow = 8 - parseInt(uci[1], 10);
+  const toCol = uci.charCodeAt(2) - 97;
+  const toRow = 8 - parseInt(uci[3], 10);
+  const promo = uci.length >= 5 ? uci[4].toLowerCase() : '';
+  if (fromCol < 0 || fromCol > 7 || toCol < 0 || toCol > 7) return null;
+  if (fromRow < 0 || fromRow > 7 || toRow < 0 || toRow > 7) return null;
+  return { fromRow, fromCol, toRow, toCol, promo };
+}
+
+function recordUci(fromR, fromC, toR, toC, promoChar) {
+  uciHistory.push(coordsToUci(fromR, fromC, toR, toC, promoChar));
+}
+
+function bestMoveAtDepth(depth, pv) {
+  const allMoves = collectMoves(turn, false);
+  if (allMoves.length === 0) return null;
+  const ordered = orderMoves(allMoves, pv);
+  let bestMove = null;
+  let bestScore = turn === 'white' ? -Infinity : Infinity;
+  let alpha = -Infinity, beta = Infinity;
+  for (const move of ordered) {
+    const sim = simulateMove(move.fromRow, move.fromCol, move.toRow, move.toCol);
+    applySimulatedMove(sim);
+    const score = minimax(depth - 1, alpha, beta, turn === 'black', turn === 'white' ? 'black' : 'white');
+    undoSimulatedMove(sim);
+    if (turn === 'white') {
+      if (score > bestScore) { bestScore = score; bestMove = move; }
+      if (score > alpha) alpha = score;
+    } else {
+      if (score < bestScore) { bestScore = score; bestMove = move; }
+      if (score < beta) beta = score;
+    }
+  }
+  return bestMove || ordered[0];
+}
+
+function findLegalSearchMove(maxDepth) {
+  const md = maxDepth || players[turn].depth || 2;
+  if (collectMoves(turn, false).length === 0) return null;
+  let pv = null;
+  for (let d = 1; d <= md; d++) {
+    thinkingDepth = d;
+    thinkingMaxDepth = md;
+    const best = bestMoveAtDepth(d, pv);
+    if (best) pv = best;
+  }
+  return pv;
+}
+
+async function findLegalSearchMoveAsync(maxDepth) {
+  const md = maxDepth || players[turn].depth || 2;
+  if (collectMoves(turn, false).length === 0) return null;
+  let pv = null;
+  for (let d = 1; d <= md; d++) {
+    thinkingDepth = d;
+    thinkingMaxDepth = md;
+    updateStatus();
+    await new Promise(r => setTimeout(r, 0));
+    const best = bestMoveAtDepth(d, pv);
+    if (best) pv = best;
+  }
+  return pv;
+}
+
+function engineMove(color) {
+  if (gameOver || turn !== color) return;
+  const cfg = players[color];
+  if (cfg.type === 'search') {
+    searchMove();
+  } else if (cfg.type === 'llm') {
+    llmMove(color);
+  }
+}
+
+async function searchMove() {
+  computerThinking = true;
+  startThinkingClock();
+  updateStatus();
+  await new Promise(r => setTimeout(r, 50));
+  const best = await findLegalSearchMoveAsync();
+  stopThinkingClock();
+  computerThinking = false;
+  if (!best) { render(); updateStatus(); return; }
+  makeMove(best.fromRow, best.fromCol, { row: best.toRow, col: best.toCol });
+  render();
+  updateStatus();
+  maybeTriggerEngine();
+}
+
+function pickLegalFromCandidates(candidates) {
+  for (let i = 0; i < candidates.length; i++) {
+    const uci = candidates[i];
+    const c = uciToCoords(uci);
+    if (!c) continue;
+    const piece = board[c.fromRow][c.fromCol];
+    if (!piece) continue;
+    const isMine = (turn === 'white' && piece === piece.toUpperCase()) || (turn === 'black' && piece === piece.toLowerCase());
+    if (!isMine) continue;
+    const legal = getLegalMoves(c.fromRow, c.fromCol);
+    const match = legal.find(m => m.row === c.toRow && m.col === c.toCol);
+    if (match) return { pick: { ...match, fromRow: c.fromRow, fromCol: c.fromCol, promo: c.promo }, rank: i + 1 };
+  }
+  return null;
+}
+
+// =========================================================================
+// In-browser LLM inference (replaces /api/predict_move)
+// =========================================================================
+
+// Mirror chess/Chess_Inference copy.py constants (lines 642-645)
+const COLOR_OFFSET = 0;
+const FROM_OFFSET  = 2;
+const TO_OFFSET    = 66;
+const PROMO_OFFSET = 130;
+const STARTGAME = 135;
+const EOFG      = 136;
+const PAD       = 137;
+const W_RESULT  = 138;
+const D_RESULT  = 139;
+
+const sessions = { white: null, black: null };
+
+let classicMoveToIdx = null;
+let classicIdxToMove = null;
+let classicSpecialIds = null;
+
+function buildClassicTokenizer() {
+  if (classicMoveToIdx) return;
+  const m = new Map();
+  let idx = 0;
+  for (let from = 0; from < 64; from++) {
+    const fromFile = String.fromCharCode(97 + (from % 8));
+    const fromRank = (8 - Math.floor(from / 8)).toString();
+    for (let to = 0; to < 64; to++) {
+      if (to === from) continue;
+      const toFile = String.fromCharCode(97 + (to % 8));
+      const toRank = (8 - Math.floor(to / 8)).toString();
+      const toOffset = to < from ? to : (to - 1);
+      for (let pi = 0; pi < 5; pi++) {
+        const promoChar = ['', 'Q', 'R', 'B', 'N'][pi];
+        const moveId = (from * 63 * 5) + (toOffset * 5) + pi;
+        const moveStr = (fromFile + fromRank + toFile + toRank + promoChar).toUpperCase();
+        m.set(moveStr, moveId);
+        if (moveId + 1 > idx) idx = moveId + 1;
+      }
+    }
+  }
+  // Specials follow the move tokens
+  const specials = ['<STARTGAME>', '<EOFG>', '<PAD>', '<W>', '<D>'];
+  const specialIds = new Set();
+  for (const s of specials) {
+    m.set(s, idx);
+    specialIds.add(idx);
+    idx++;
+  }
+  classicMoveToIdx = m;
+  classicIdxToMove = new Map();
+  for (const [k, v] of m.entries()) classicIdxToMove.set(v, k);
+  classicSpecialIds = specialIds;
+}
+
+function squareToUciStr(sq) {
+  return String.fromCharCode(97 + (sq % 8)) + (8 - Math.floor(sq / 8));
+}
+
+function parseUciMoveTo4Tokens(moveStr, isWhite) {
+  const s = moveStr.toLowerCase().trim();
+  const fromFile = s.charCodeAt(0) - 97;
+  const fromRank = parseInt(s[1], 10);
+  const fromSq = (8 - fromRank) * 8 + fromFile;
+  const toFile = s.charCodeAt(2) - 97;
+  const toRank = parseInt(s[3], 10);
+  const toSq = (8 - toRank) * 8 + toFile;
+  const promoMap = { q: 1, r: 2, b: 3, n: 4 };
+  const promoIdx = (s.length >= 5 && promoMap[s[4]]) ? promoMap[s[4]] : 0;
+  return [
+    COLOR_OFFSET + (isWhite ? 0 : 1),
+    FROM_OFFSET + fromSq,
+    TO_OFFSET + toSq,
+    PROMO_OFFSET + promoIdx
+  ];
+}
+
+function tokenize4Token(inputText) {
+  const tokens = [];
+  let ply = 0;
+  let i = 0;
+  const n = inputText.length;
+  while (i < n) {
+    if (inputText.substr(i, 11) === '<STARTGAME>') {
+      tokens.push(STARTGAME); ply = 0; i += 11;
+    } else if (inputText.substr(i, 6) === '<EOFG>') {
+      tokens.push(EOFG); i += 6;
+    } else if (inputText.substr(i, 3) === '<W>') {
+      tokens.push(W_RESULT); i += 3;
+    } else if (inputText.substr(i, 3) === '<D>') {
+      tokens.push(D_RESULT); i += 3;
+    } else if (/\s/.test(inputText[i])) {
+      i++;
+    } else if (i + 4 <= n) {
+      let moveStr = null;
+      if (i + 5 <= n && /[a-z]/i.test(inputText[i + 4]) && /[qrbn]/i.test(inputText[i + 4])) {
+        const c = inputText.substr(i, 5);
+        if (/[a-z]/i.test(c[0]) && /\d/.test(c[1]) && /[a-z]/i.test(c[2]) && /\d/.test(c[3])) {
+          moveStr = c; i += 5;
+        }
+      }
+      if (moveStr === null) {
+        const c = inputText.substr(i, 4);
+        if (/[a-z]/i.test(c[0]) && /\d/.test(c[1]) && /[a-z]/i.test(c[2]) && /\d/.test(c[3])) {
+          moveStr = c; i += 4;
+        } else {
+          i++; continue;
+        }
+      }
+      const isWhite = (ply % 2 === 0);
+      const four = parseUciMoveTo4Tokens(moveStr, isWhite);
+      tokens.push(four[0], four[1], four[2], four[3]);
+      ply++;
+    } else {
+      i++;
+    }
+  }
+  return { tokens, ply };
+}
+
+function tokenizeClassic(inputText) {
+  buildClassicTokenizer();
+  const tokens = [];
+  let i = 0;
+  const n = inputText.length;
+  while (i < n) {
+    if (inputText.substr(i, 11) === '<STARTGAME>') {
+      tokens.push(classicMoveToIdx.get('<STARTGAME>')); i += 11;
+    } else if (inputText.substr(i, 6) === '<EOFG>') {
+      tokens.push(classicMoveToIdx.get('<EOFG>')); i += 6;
+    } else if (inputText.substr(i, 3) === '<W>') {
+      tokens.push(classicMoveToIdx.get('<W>')); i += 3;
+    } else if (inputText.substr(i, 3) === '<D>') {
+      tokens.push(classicMoveToIdx.get('<D>')); i += 3;
+    } else if (/\s/.test(inputText[i])) {
+      i++;
+    } else if (i + 4 <= n) {
+      let moveStr = null;
+      if (i + 5 <= n && /[a-z]/i.test(inputText[i + 4]) && /[qrbn]/i.test(inputText[i + 4])) {
+        const c = inputText.substr(i, 5).toUpperCase();
+        if (/[A-Z]/.test(c[0]) && /\d/.test(c[1]) && /[A-Z]/.test(c[2]) && /\d/.test(c[3])) {
+          if (classicMoveToIdx.has(c)) { moveStr = c; i += 5; }
+        }
+      }
+      if (moveStr === null) {
+        const c = inputText.substr(i, 4).toUpperCase();
+        if (/[A-Z]/.test(c[0]) && /\d/.test(c[1]) && /[A-Z]/.test(c[2]) && /\d/.test(c[3])) {
+          if (classicMoveToIdx.has(c)) { moveStr = c; i += 4; }
+          else { i++; continue; }
+        } else {
+          i++; continue;
+        }
+      }
+      tokens.push(classicMoveToIdx.get(moveStr));
+    } else {
+      i++;
+    }
+  }
+  return tokens;
+}
+
+function softmax(arr) {
+  let max = -Infinity;
+  for (let i = 0; i < arr.length; i++) if (arr[i] > max) max = arr[i];
+  let sum = 0;
+  const out = new Float64Array(arr.length);
+  for (let i = 0; i < arr.length; i++) { out[i] = Math.exp(arr[i] - max); sum += out[i]; }
+  for (let i = 0; i < arr.length; i++) out[i] /= sum;
+  return out;
+}
+
+function topKIndices(probs, k) {
+  const idxs = Array.from({ length: probs.length }, (_, i) => i);
+  idxs.sort((a, b) => probs[b] - probs[a]);
+  const out = [];
+  for (let i = 0; i < Math.min(k, idxs.length); i++) {
+    out.push({ idx: idxs[i], prob: probs[idxs[i]] });
+  }
+  return out;
+}
+
+function argmax(arr) {
+  let bestIdx = 0, bestVal = -Infinity;
+  for (let i = 0; i < arr.length; i++) if (arr[i] > bestVal) { bestVal = arr[i]; bestIdx = i; }
+  return bestIdx;
+}
+
+function tokensToTensor(tokens) {
+  const big = new BigInt64Array(tokens.length);
+  for (let i = 0; i < tokens.length; i++) big[i] = BigInt(tokens[i]);
+  return new ort.Tensor('int64', big, [1, tokens.length]);
+}
+
+function fromIdxTensor(fromSq) {
+  return new ort.Tensor('int64', BigInt64Array.from([BigInt(fromSq)]), [1]);
+}
+
+async function predictMove4Token(s, history, topK) {
+  const fullText = '<STARTGAME> ' + history;
+  const { tokens, ply } = tokenize4Token(fullText);
+  const blockSize = s.blockSize;
+  const isWhite = (ply % 2 === 0);
+  const colorTok = COLOR_OFFSET + (isWhite ? 0 : 1);
+
+  let baseSeq = tokens.slice();
+  baseSeq.push(colorTok);
+  if (baseSeq.length > blockSize) baseSeq = baseSeq.slice(-blockSize);
+
+  // Step 1: from logits (from_idx is a dummy here)
+  const out1 = await s.session.run({
+    input_ids: tokensToTensor(baseSeq),
+    from_idx: fromIdxTensor(0)
+  });
+  const fromLogits = Array.from(out1.from_logits.data);
+  const fromProbs = softmax(fromLogits);
+  const numFrom = Math.min(topK, 64);
+  const topFrom = topKIndices(fromProbs, numFrom);
+
+  const candidates = [];
+  for (const { idx: fromSq, prob: fromProb } of topFrom) {
+    const fromTok = FROM_OFFSET + fromSq;
+    let seqWithFrom = baseSeq.slice();
+    seqWithFrom.push(fromTok);
+    if (seqWithFrom.length > blockSize) seqWithFrom = seqWithFrom.slice(-blockSize);
+
+    const out2 = await s.session.run({
+      input_ids: tokensToTensor(seqWithFrom),
+      from_idx: fromIdxTensor(fromSq)
+    });
+    const toLogits = Array.from(out2.to_logits.data);
+    toLogits[fromSq] = -Infinity;
+    const toProbs = softmax(toLogits);
+    const numTo = Math.min(3, 64);
+    const topTo = topKIndices(toProbs, numTo);
+
+    for (const { idx: toSq, prob: toProb } of topTo) {
+      const score = fromProb * toProb;
+      const fromRank = 8 - Math.floor(fromSq / 8);
+      const toRank = 8 - Math.floor(toSq / 8);
+      const isPromo = (isWhite && fromRank === 7 && toRank === 8) ||
+                      (!isWhite && fromRank === 2 && toRank === 1);
+      let promoIdx = 0;
+      if (isPromo) {
+        const toTok = TO_OFFSET + toSq;
+        let seqWithTo = seqWithFrom.slice();
+        seqWithTo.push(toTok);
+        if (seqWithTo.length > blockSize) seqWithTo = seqWithTo.slice(-blockSize);
+        const out3 = await s.session.run({
+          input_ids: tokensToTensor(seqWithTo),
+          from_idx: fromIdxTensor(fromSq)
+        });
+        const promoLogits = Array.from(out3.promo_logits.data);
+        promoIdx = argmax(promoLogits);
+        if (promoIdx === 0) promoIdx = 1;
+      }
+      candidates.push({ score, fromSq, toSq, promoIdx });
+    }
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  const promoChars = ['', 'q', 'r', 'b', 'n'];
+  const seen = new Set();
+  const result = [];
+  for (const c of candidates) {
+    let uci = squareToUciStr(c.fromSq) + squareToUciStr(c.toSq);
+    if (c.promoIdx > 0 && c.promoIdx < promoChars.length) uci += promoChars[c.promoIdx];
+    if (seen.has(uci)) continue;
+    seen.add(uci);
+    result.push(uci);
+    if (result.length >= topK) break;
+  }
+  return result;
+}
+
+async function predictMoveClassic(s, history, topK) {
+  buildClassicTokenizer();
+  const fullText = '<STARTGAME> ' + history;
+  let tokens = tokenizeClassic(fullText);
+  const blockSize = s.blockSize;
+  if (tokens.length > blockSize) tokens = tokens.slice(-blockSize);
+
+  const out = await s.session.run({ input_ids: tokensToTensor(tokens) });
+  const logits = Array.from(out.logits.data);
+  for (const sid of classicSpecialIds) logits[sid] = -Infinity;
+  const probs = softmax(logits);
+  const top = topKIndices(probs, Math.min(topK, probs.length));
+  const moves = [];
+  for (const { idx } of top) {
+    const name = classicIdxToMove.get(idx);
+    if (!name) continue;
+    if (name.startsWith('<')) continue;
+    moves.push(name.toLowerCase());
+    if (moves.length >= topK) break;
+  }
+  return moves;
+}
+
+async function llmMove(color) {
+  const s = sessions[color];
+  if (!s) {
+    document.getElementById('status').textContent =
+      `LLM error — load an .onnx model file for ${color} first.`;
+    computerThinking = false;
+    render();
+    return;
+  }
+  computerThinking = true;
+  updateStatus();
+  const topK = 20;
+  llmStats[color].tries += 1;
+  try {
+    const candidates = s.tokenMode === 'classic'
+      ? await predictMoveClassic(s, uciHistory.join(' '), topK)
+      : await predictMove4Token(s, uciHistory.join(' '), topK);
+    if (gameOver || turn !== color) { computerThinking = false; return; }
+    const found = pickLegalFromCandidates(candidates);
+    let pick, flash = null;
+    if (found) {
+      pick = found.pick;
+      llmStats[color].lastRank = found.rank;
+      llmStats[color].sumRank += found.rank;
+      if (found.rank > llmStats[color].maxRank) llmStats[color].maxRank = found.rank;
+      if (found.rank > 1) flash = `${color === 'white' ? 'White' : 'Black'} LLM: legal move found at rank ${found.rank}/${candidates.length}`;
+    } else {
+      llmStats[color].fallbacks += 1;
+      llmStats[color].lastRank = 0;
+      console.warn(`LLM (${color}) returned no legal move in top ${candidates.length}; using search depth 2`, candidates);
+      const fb = findLegalSearchMove();
+      if (!fb) { computerThinking = false; render(); updateStatus(); updateLlmStats(); return; }
+      pick = { row: fb.toRow, col: fb.toCol, fromRow: fb.fromRow, fromCol: fb.fromCol, promo: '' };
+      flash = `${color === 'white' ? 'White' : 'Black'} LLM → search fallback (0 legal in top ${topK})`;
+    }
+    computerThinking = false;
+    const moveObj = { row: pick.row, col: pick.col };
+    if (pick.castle) moveObj.castle = pick.castle;
+    if (pick.promo) moveObj.promo = pick.promo;
+    makeMove(pick.fromRow, pick.fromCol, moveObj);
+    render();
+    updateStatus();
+    updateLlmStats(flash);
+    maybeTriggerEngine();
+  } catch (e) {
+    computerThinking = false;
+    console.error('LLM move failed:', e);
+    document.getElementById('status').textContent = 'LLM error: ' + (e.message || e);
+  }
+}
+
+// =========================================================================
+// ORT bootstrap + per-side model file picker
+// =========================================================================
+
+let ortReady = false;
+let sessionOpts = null;
+
+async function initOrt() {
+  const statusEl = document.getElementById('ort-status');
+  if (typeof ort === 'undefined') {
+    statusEl.textContent = 'Failed to load ONNX Runtime Web (CDN). Check your network.';
+    statusEl.style.color = '#ff8080';
+    return;
+  }
+  try {
+    ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
+    if (ort.env.wasm) ort.env.wasm.numThreads = Math.min(4, navigator.hardwareConcurrency || 1);
+  } catch (e) {
+    console.warn('ORT env config failed', e);
+  }
+  const hasWebGPU = typeof navigator !== 'undefined' && navigator.gpu;
+  const providers = hasWebGPU ? ['webgpu', 'wasm'] : ['wasm'];
+  sessionOpts = { executionProviders: providers, graphOptimizationLevel: 'all' };
+  ortReady = true;
+  statusEl.textContent = `ONNX Runtime Web ready (providers: ${providers.join(', ')}).`;
+}
+
+async function loadOnnxFile(color, file) {
+  const statusEl = document.querySelector(`.model-status[data-color="${color}"]`);
+  if (!ortReady) {
+    statusEl.textContent = 'ORT not ready yet';
+    statusEl.className = 'model-status error';
+    return;
+  }
+  statusEl.textContent = `Loading ${file.name} (${(file.size / (1024 * 1024)).toFixed(1)} MB)…`;
+  statusEl.className = 'model-status';
+  try {
+    const buf = await file.arrayBuffer();
+    const session = await ort.InferenceSession.create(buf, sessionOpts);
+    const meta = (session.metadata && session.metadata.customMetadata) || {};
+    const tokenMode = (meta.token_mode || '').toLowerCase() || inferTokenModeFromOutputs(session);
+    const blockSize = parseInt(meta.block_size || '512', 10);
+    const vocabSize = parseInt(meta.vocab_size || '140', 10);
+    sessions[color] = {
+      session,
+      tokenMode: tokenMode === 'classic' ? 'classic' : '4token',
+      blockSize: isFinite(blockSize) ? blockSize : 512,
+      vocabSize: isFinite(vocabSize) ? vocabSize : 140,
+      fileName: file.name,
+    };
+    statusEl.textContent = `${file.name} · ${sessions[color].tokenMode} · ctx ${sessions[color].blockSize}`;
+    statusEl.className = 'model-status ready';
+    updateLlmAvailability();
+  } catch (e) {
+    console.error(e);
+    statusEl.textContent = `Load failed: ${e.message || e}`;
+    statusEl.className = 'model-status error';
+    sessions[color] = null;
+    updateLlmAvailability();
+  }
+}
+
+function inferTokenModeFromOutputs(session) {
+  const names = session.outputNames || [];
+  if (names.includes('from_logits') && names.includes('to_logits')) return '4token';
+  return 'classic';
+}
+
+function updateLlmAvailability() {
+  for (const color of ['white', 'black']) {
+    const sel = document.querySelector(`.player-type[data-color="${color}"]`);
+    const opt = sel.querySelector('option[value="llm"]');
+    if (sessions[color]) {
+      opt.disabled = false;
+      opt.textContent = 'LLM';
+    } else {
+      // Only disable if currently not selected; if user already chose LLM and reloads, keep enabled to surface the error
+      if (sel.value !== 'llm') {
+        opt.disabled = true;
+        opt.textContent = 'LLM (load .onnx)';
+      }
+    }
+  }
+}
+
+function syncVisibility() {
+  for (const color of ['white', 'black']) {
+    const typeSel = document.querySelector(`.player-type[data-color="${color}"]`);
+    const depthSel = document.querySelector(`.depth-picker[data-color="${color}"]`);
+    depthSel.classList.toggle('hidden', typeSel.value !== 'search');
+    // Always show the model loader so users can prep an .onnx before switching to LLM
+  }
+}
+
+document.querySelectorAll('.player-type').forEach(sel => {
+  sel.addEventListener('change', () => { syncVisibility(); init(); });
+});
+document.querySelectorAll('.depth-picker').forEach(sel => {
+  sel.addEventListener('change', () => {
+    players.white = readPlayerConfig('white');
+    players.black = readPlayerConfig('black');
+  });
+});
+document.querySelectorAll('.model-file').forEach(input => {
+  input.addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const color = e.target.dataset.color;
+    await loadOnnxFile(color, file);
+  });
+});
+document.getElementById('reset-btn').addEventListener('click', init);
+
+initOrt().then(() => { syncVisibility(); init(); });
+</script>
+</body>
+</html>
