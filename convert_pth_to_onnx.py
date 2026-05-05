@@ -80,32 +80,38 @@ def detect_n_kv_heads(model):
     return None
 
 
-def _gui_pick_pth():
-    """Open a Finder/Tk file picker to choose a .pth checkpoint.
+def _gui_pick_pth(multiple=False):
+    """Open a Finder/Tk file picker to choose one (or many) .pth checkpoints.
 
-    Returns the absolute path string, or None if the user cancelled.
-    Falls back gracefully if tkinter isn't available.
+    Returns a list of absolute path strings, or [] if the user cancelled or
+    tkinter isn't available.
     """
     try:
         import tkinter as tk
         from tkinter import filedialog
     except Exception:
-        return None
+        return []
     root = tk.Tk()
     root.withdraw()
     try:
-        # Default to the chess models dir if it exists.
         initial = os.path.join(HERE, "Chess_LLM_models copy")
         if not os.path.isdir(initial):
             initial = HERE
+        if multiple:
+            paths = filedialog.askopenfilenames(
+                title="Pick chess .pth checkpoint(s) to convert",
+                initialdir=initial,
+                filetypes=[("PyTorch checkpoint", "*.pth"), ("All files", "*.*")],
+            )
+            return list(paths) if paths else []
         path = filedialog.askopenfilename(
             title="Pick a chess .pth checkpoint to convert",
             initialdir=initial,
             filetypes=[("PyTorch checkpoint", "*.pth"), ("All files", "*.*")],
         )
+        return [path] if path else []
     finally:
         root.destroy()
-    return path or None
 
 
 def _gui_pick_out(default_dir, default_name):
@@ -129,54 +135,27 @@ def _gui_pick_out(default_dir, default_name):
     return path or None
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--pth", required=False, help="Path to source .pth checkpoint (omit to pick via Finder)")
-    ap.add_argument("--out", required=False, help="Path to write .onnx (omit to pick via Finder)")
-    ap.add_argument("--fp16", dest="fp16", action="store_true", default=True,
-                    help="Convert weights to float16 after export (default)")
-    ap.add_argument("--no-fp16", dest="fp16", action="store_false",
-                    help="Keep weights as float32")
-    ap.add_argument("--int8", action="store_true",
-                    help="Apply dynamic int8 quantization (overrides --fp16)")
-    ap.add_argument("--opset", type=int, default=17)
-    ap.add_argument("--seed-len", type=int, default=16,
-                    help="Sample sequence length used for tracing")
-    ap.add_argument("--force-export", action="store_true",
-                    help="Re-trace+export even if .fp32.tmp.onnx already exists")
-    args = ap.parse_args()
+def _gui_notify(title, message):
+    """Best-effort macOS popup so users running the script via Finder/Terminal
+    don't have to read the terminal log to see that conversion finished."""
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+    except Exception:
+        return
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        messagebox.showinfo(title, message)
+    finally:
+        root.destroy()
 
-    # Friendly fallback: if invoked from Terminal with no flags, pop up a
-    # Finder dialog so the user doesn't have to type long paths.
-    # Probe for a reusable tmp first (when --out is given) so we don't ask
-    # for a .pth we won't actually need.
-    can_reuse_known = (
-        (not args.force_export)
-        and args.out
-        and os.path.isfile(args.out + ".fp32.tmp.onnx")
-    )
-    if not args.pth and not can_reuse_known:
-        picked = _gui_pick_pth()
-        if not picked:
-            print("ERROR: no .pth selected (cancelled or tkinter unavailable).", file=sys.stderr)
-            sys.exit(2)
-        args.pth = picked
-        print(f"Selected .pth: {args.pth}")
-    if not args.out:
-        # Default location: next to the chosen .pth with the same stem.
-        default_dir = os.path.dirname(args.pth) if args.pth else HERE
-        default_name = os.path.splitext(os.path.basename(args.pth or "model.pth"))[0] + ".onnx"
-        picked = _gui_pick_out(default_dir, default_name)
-        if not picked:
-            args.out = os.path.join(default_dir, default_name)
-            print(f"No save location chosen — defaulting to {args.out}")
-        else:
-            args.out = picked
-            print(f"Output .onnx: {args.out}")
 
+def convert_one(pth_path, out_path, args):
+    """Convert a single .pth -> .onnx. Returns (final_path, size_mb, summary_dict)."""
     import onnx
 
-    tmp_path = args.out + ".fp32.tmp.onnx"
+    tmp_path = out_path + ".fp32.tmp.onnx"
 
     # If a metadata-tagged tmp file already exists, skip the (very slow) trace+export
     # step and reuse it. This makes int8/fp16 retries fast and survives a crashed
@@ -205,20 +184,16 @@ def main():
             reuse = False
 
     if not reuse:
-        if not args.pth:
-            print("ERROR: --pth is required when no reusable .fp32.tmp.onnx exists.",
-                  file=sys.stderr)
-            sys.exit(2)
-        if not os.path.isfile(args.pth):
-            print(f"ERROR: not a file: {args.pth}", file=sys.stderr)
-            sys.exit(2)
+        if not pth_path:
+            raise RuntimeError("pth_path is required when no reusable .fp32.tmp.onnx exists")
+        if not os.path.isfile(pth_path):
+            raise FileNotFoundError(pth_path)
 
-        print(f"Loading {args.pth} ...")
+        print(f"Loading {pth_path} ...")
         model, vocab_size, n_embd, n_head, block_size, n_layer, dropout, tokenizer = \
-            inference.load_model_file(checkpoint_path=args.pth)
+            inference.load_model_file(checkpoint_path=pth_path)
         if model is None:
-            print("ERROR: load_model_file returned None.", file=sys.stderr)
-            sys.exit(3)
+            raise RuntimeError("load_model_file returned None")
 
         token_mode = getattr(model, "_token_mode", "4token")
         n_kv_heads = detect_n_kv_heads(model)
@@ -257,8 +232,7 @@ def main():
             output_names = ["logits"]
             dynamic_axes = {"input_ids": {1: "T"}}
         else:
-            print(f"ERROR: unsupported token_mode={token_mode}", file=sys.stderr)
-            sys.exit(4)
+            raise RuntimeError(f"unsupported token_mode={token_mode}")
 
         print(f"Tracing & exporting ONNX (token_mode={token_mode}, opset={args.opset}) -> {tmp_path}")
         with torch.no_grad():
@@ -292,7 +266,7 @@ def main():
         add_meta("arch_version", "1")
         onnx.save(m, tmp_path)
 
-    final_path = args.out
+    final_path = out_path
     if args.int8:
         from onnxruntime.quantization import quantize_dynamic, QuantType
         print("Quantizing weights (dynamic int8) ...")
@@ -322,7 +296,98 @@ def main():
     print(f"  size: {size_mb:.1f} MB")
     print(f"  token_mode={token_mode}  block_size={block_size}  vocab_size={vocab_size}")
     print(f"  n_embd={n_embd}  n_head={n_head}  n_kv_heads={n_kv_heads}  n_layer={n_layer}")
-    print("\nNow open chess_full.html and pick this .onnx via the per-side file picker.")
+    return (final_path, size_mb, {
+        "token_mode": token_mode, "block_size": block_size, "vocab_size": vocab_size,
+        "n_embd": n_embd, "n_head": n_head, "n_kv_heads": n_kv_heads, "n_layer": n_layer,
+    })
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="Convert ChessModel .pth checkpoints to browser-loadable .onnx files. "
+                    "Run with no flags to pick file(s) via Finder.")
+    ap.add_argument("--pth", required=False,
+                    help="Path to source .pth checkpoint (omit to pick via Finder)")
+    ap.add_argument("--out", required=False,
+                    help="Path to write .onnx (omit to derive from .pth name or pick via Finder)")
+    ap.add_argument("--fp16", dest="fp16", action="store_true", default=True,
+                    help="Convert weights to float16 after export (default)")
+    ap.add_argument("--no-fp16", dest="fp16", action="store_false",
+                    help="Keep weights as float32")
+    ap.add_argument("--int8", action="store_true",
+                    help="Apply dynamic int8 quantization (overrides --fp16)")
+    ap.add_argument("--opset", type=int, default=17)
+    ap.add_argument("--seed-len", type=int, default=16,
+                    help="Sample sequence length used for tracing")
+    ap.add_argument("--force-export", action="store_true",
+                    help="Re-trace+export even if .fp32.tmp.onnx already exists")
+    args = ap.parse_args()
+
+    # Build the work list of (pth_path, out_path) pairs.
+    # If the user provides --out and a reusable .fp32.tmp.onnx exists, --pth is
+    # optional (we can finish the conversion without re-tracing).
+    can_reuse_known = (
+        (not args.force_export)
+        and args.out
+        and os.path.isfile(args.out + ".fp32.tmp.onnx")
+    )
+    gui_used = False
+    pairs = []
+    if args.pth and args.out:
+        pairs.append((args.pth, args.out))
+    elif args.pth:
+        default_dir = os.path.dirname(args.pth) or HERE
+        default_name = os.path.splitext(os.path.basename(args.pth))[0] + ".onnx"
+        pairs.append((args.pth, os.path.join(default_dir, default_name)))
+    elif can_reuse_known:
+        pairs.append((None, args.out))
+    else:
+        # Fully GUI flow: let user pick one OR many .pth files at once.
+        gui_used = True
+        picks = _gui_pick_pth(multiple=True)
+        if not picks:
+            print("ERROR: no .pth selected (cancelled or tkinter unavailable).", file=sys.stderr)
+            sys.exit(2)
+        for p in picks:
+            default_dir = os.path.dirname(p) or HERE
+            default_name = os.path.splitext(os.path.basename(p))[0] + ".onnx"
+            pairs.append((p, os.path.join(default_dir, default_name)))
+
+    print(f"Converting {len(pairs)} checkpoint(s)...")
+    results = []
+    failures = []
+    for i, (pth, out) in enumerate(pairs, 1):
+        print(f"\n=== [{i}/{len(pairs)}] {pth or '(reusing tmp)'} -> {out} ===")
+        try:
+            results.append(convert_one(pth, out, args))
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            failures.append((pth or out, str(e)))
+
+    print("\n" + "=" * 60)
+    if results:
+        print(f"Converted {len(results)} file(s):")
+        for path, mb, meta in results:
+            print(f"  - {path} ({mb:.1f} MB, {meta['token_mode']})")
+    if failures:
+        print(f"FAILED ({len(failures)}):")
+        for path, err in failures:
+            print(f"  - {path}: {err}")
+    print("\nOpen chess/chess_full.html and pick the .onnx file(s) via the per-side picker.")
+
+    if gui_used:
+        if results and not failures:
+            lines = [f"{os.path.basename(p)} ({mb:.1f} MB)" for p, mb, _ in results]
+            _gui_notify("Conversion complete",
+                        "Converted:\n" + "\n".join(lines) +
+                        "\n\nOpen chess_full.html and pick the .onnx via the file picker.")
+        elif failures:
+            _gui_notify("Conversion finished with errors",
+                        f"Done: {len(results)}, failed: {len(failures)}.\n"
+                        "See terminal output for details.")
+
+    sys.exit(0 if not failures else 5)
 
 
 if __name__ == "__main__":
