@@ -18,6 +18,9 @@
   .model-loader { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
   .model-loader input[type="file"] { font-size: 0.8rem; color: #ddd; background: #3a3a5a; border: 2px solid #6a6aaa; border-radius: 6px; padding: 4px 6px; max-width: 220px; }
   .model-loader input[type="file"]::file-selector-button { background: #5a5a8a; color: #fff; border: 0; padding: 4px 10px; border-radius: 4px; cursor: pointer; margin-right: 8px; }
+  .model-loader .demo-btn { font-size: 0.8rem; padding: 4px 10px; background: #4a8a4a; color: #fff; border: 1px solid #6aaa6a; border-radius: 4px; cursor: pointer; }
+  .model-loader .demo-btn:hover { background: #6aaa6a; }
+  .model-loader .demo-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .model-status { font-size: 0.75rem; color: #b0b0d0; max-width: 220px; }
   .model-status.ready { color: #80ffb0; }
   .model-status.error { color: #ff8080; }
@@ -67,6 +70,7 @@
     </select>
     <div class="model-loader" data-color="white">
       <input type="file" class="model-file" accept=".onnx" data-color="white">
+      <button class="demo-btn" data-color="white" type="button">Use demo model</button>
       <span class="model-status" data-color="white">No model loaded</span>
     </div>
   </div>
@@ -88,6 +92,7 @@
     </select>
     <div class="model-loader" data-color="black">
       <input type="file" class="model-file" accept=".onnx" data-color="black">
+      <button class="demo-btn" data-color="black" type="button">Use demo model</button>
       <span class="model-status" data-color="black">No model loaded</span>
     </div>
   </div>
@@ -1475,6 +1480,61 @@ document.querySelectorAll('.model-file').forEach(input => {
     await loadOnnxFile(color, file);
   });
 });
+
+// "Use demo model" button — fetches the bundled fp16 checkpoint from this
+// repo's v1.0 release and feeds it through the same loadOnnxFile() path as
+// the file picker. Works on GitHub Pages, file://, and local servers since
+// the URL is absolute.
+const DEMO_MODEL_URL = 'https://github.com/jmrothberg/chess_html/releases/download/v1.0/C12H8E512K2_B512_E13B500_L0.844_0314_1720.onnx';
+const DEMO_MODEL_NAME = 'C12H8E512K2_B512_E13B500_L0.844_0314_1720.onnx';
+let demoModelBlob = null; // cache so the second side doesn't re-download
+
+async function fetchDemoModel(statusEl) {
+  if (demoModelBlob) return demoModelBlob;
+  statusEl.textContent = 'Downloading demo model… (~188 MB, first time only)';
+  statusEl.className = 'model-status';
+  const res = await fetch(DEMO_MODEL_URL, { cache: 'force-cache' });
+  if (!res.ok) throw new Error(`HTTP ${res.status} fetching demo model`);
+  // Stream with progress if Content-Length is exposed; otherwise just await blob.
+  const total = parseInt(res.headers.get('Content-Length') || '0', 10);
+  if (total && res.body && res.body.getReader) {
+    const reader = res.body.getReader();
+    const chunks = [];
+    let received = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      received += value.length;
+      const pct = ((received / total) * 100).toFixed(0);
+      statusEl.textContent = `Downloading demo model… ${pct}% (${(received / (1024 * 1024)).toFixed(1)}/${(total / (1024 * 1024)).toFixed(0)} MB)`;
+    }
+    demoModelBlob = new Blob(chunks);
+  } else {
+    demoModelBlob = await res.blob();
+  }
+  return demoModelBlob;
+}
+
+document.querySelectorAll('.demo-btn').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const color = btn.dataset.color;
+    const statusEl = document.querySelector(`.model-status[data-color="${color}"]`);
+    btn.disabled = true;
+    try {
+      const blob = await fetchDemoModel(statusEl);
+      const file = new File([blob], DEMO_MODEL_NAME, { type: 'application/octet-stream' });
+      await loadOnnxFile(color, file);
+    } catch (e) {
+      console.error(e);
+      statusEl.textContent = `Demo model load failed: ${e.message || e}`;
+      statusEl.className = 'model-status error';
+    } finally {
+      btn.disabled = false;
+    }
+  });
+});
+
 document.getElementById('reset-btn').addEventListener('click', init);
 
 initOrt().then(() => { syncVisibility(); init(); });

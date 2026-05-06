@@ -1,24 +1,38 @@
 # Chess (Human / Search / LLM)
 
+> ### ▶ [**Play now in your browser →**](https://jmrothberg.github.io/chess_html/chess_full.html)
+>
+> No install. No server. Open the link, optionally click **Use demo model** under either side to fetch a pretrained chess LLM (~188 MB, served from the v1.0 release), set that side to **LLM**, and play.
+>
+> Search-only (no LLM, no download): [**chess.html →**](https://jmrothberg.github.io/chess_html/chess.html)
+
 Full-rules chess in the browser. Choose **White Player** and **Black Player** independently: human clicks, **search** (engine), or **LLM** (transformer model).
 
 Two ways to run the LLM:
 
-1. **`chess.html`** — talks to a local Python bridge (`chess_server.py`) that loads `.pth` checkpoints with PyTorch. Easiest for development; needs Python.
-2. **`chess_full.html`** — fully standalone. Runs ONNX inference in the browser via `onnxruntime-web` + WebGPU. **No Python at runtime, no server.** Works as a `file://` page or hosted on GitHub Pages. The user picks a converted `.onnx` per side via a file picker.
+1. **`chess_full.html`** *(recommended; standalone)* — runs ONNX inference in the browser via `onnxruntime-web` + WebGPU. **No Python at runtime, no server.** Works as a `file://` page or hosted on GitHub Pages. Either click **Use demo model** to fetch the bundled checkpoint from this repo's release, or pick your own converted `.onnx` per side.
+2. **`chess.html`** — talks to a local Python bridge (`chess_server.py`) that loads `.pth` checkpoints with PyTorch. Easiest for in-process development with multiple checkpoints in a folder.
 
 ---
 
-## Play from GitHub (no setup, search engine only)
+## Play from GitHub (no setup)
 
-These links load `chess.html` straight from the repo. Human and search play work; LLM is disabled until a server is running.
+These links load the game straight from this repo via GitHub Pages — no clone, no install:
 
-- **GitHub Pages:** [Play on jmrothberg.github.io](https://jmrothberg.github.io/Games/chess/chess.html)
-- **Raw mirror (raw.githack):** [Play via raw.githack](https://raw.githack.com/jmrothberg/Games/main/chess/chess.html)
-
-The same applies to `chess_full.html`, with the bonus that you can also play **LLM** there once you've converted a `.pth` to `.onnx` — the file picker reads from your local disk; nothing has to be hosted.
+- **Standalone with LLM:** [chess_full.html](https://jmrothberg.github.io/chess_html/chess_full.html) — search engine works immediately; for LLM mode click **Use demo model** under a side or pick your own `.onnx`.
+- **Search-engine only:** [chess.html](https://jmrothberg.github.io/chess_html/chess.html) — same chess engine, no LLM mode (the LLM dropdown stays disabled because no Python bridge is reachable).
+- **Raw mirror (fallback):** [chess_full.html via raw.githack](https://raw.githack.com/jmrothberg/chess_html/main/chess_full.html) — useful if Pages is slow to update.
 
 **Search play** uses iterative-deepening alpha-beta minimax with quiescence at depths 1–7. See "Search engine" below for what's under the hood.
+
+### The bundled demo model
+
+The "Use demo model" button in `chess_full.html` fetches one chess LLM checkpoint from this repo's [v1.0 release](https://github.com/jmrothberg/chess_html/releases/tag/v1.0):
+
+- File: `C12H8E512K2_B512_E13B500_L0.844_0314_1720.onnx` (~188 MB)
+- Architecture: 4-token mode, 12 layers, 512-dim embeddings, 8 query heads, 2 KV heads, 512-token context
+- Format: fp16 ONNX, runs on WebGPU (Chrome/Edge) or WASM (Firefox/Safari)
+- Browser caches it after the first download.
 
 ---
 
