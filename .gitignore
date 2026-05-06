@@ -1,0 +1,13 @@
+# Large local chess checkpoints — not stored in the repo.
+# Drop your trained .pth files here after cloning.
+Chess_LLM_models copy/*.pth
+Chess_LLM_models copy/*.onnx
+Chess_LLM_models copy/*.onnx.fp32.tmp.onnx
+
+# Python build artifacts (chess_server.py / Chess_Inference copy.py)
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store
