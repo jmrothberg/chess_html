@@ -1,4 +1,4 @@
-# Chess (Human / Search / LLM)
+# JMR's LLM Chess (Human / Search / LLM)
 
 > ### ▶ [**Play now in your browser →**](https://jmrothberg.github.io/chess_html/chess_full.html)
 >
