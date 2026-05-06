@@ -1481,17 +1481,19 @@ document.querySelectorAll('.model-file').forEach(input => {
   });
 });
 
-// "Use demo model" button — fetches the bundled fp16 checkpoint from this
-// repo's v1.0 release and feeds it through the same loadOnnxFile() path as
-// the file picker. Works on GitHub Pages, file://, and local servers since
-// the URL is absolute.
-const DEMO_MODEL_URL = 'https://github.com/jmrothberg/chess_html/releases/download/v1.0/C12H8E512K2_B512_E13B500_L0.844_0314_1720.onnx';
-const DEMO_MODEL_NAME = 'C12H8E512K2_B512_E13B500_L0.844_0314_1720.onnx';
+// "Use demo model" button — fetches the bundled int8 checkpoint that ships
+// with the repo. Same-origin when served via GitHub Pages or any local
+// server, so no CORS concerns. (An fp16 release-asset version exists at
+// https://github.com/jmrothberg/chess_html/releases/tag/v1.0 but GitHub's
+// release-asset CDN doesn't send Access-Control-Allow-Origin, so it can't be
+// fetched from a browser.)
+const DEMO_MODEL_URL = 'Chess_LLM_models%20copy/chess-12L-int8-demo.onnx';
+const DEMO_MODEL_NAME = 'chess-12L-int8-demo.onnx';
 let demoModelBlob = null; // cache so the second side doesn't re-download
 
 async function fetchDemoModel(statusEl) {
   if (demoModelBlob) return demoModelBlob;
-  statusEl.textContent = 'Downloading demo model… (~188 MB, first time only)';
+  statusEl.textContent = 'Downloading demo model… (~46 MB, first time only)';
   statusEl.className = 'model-status';
   const res = await fetch(DEMO_MODEL_URL, { cache: 'force-cache' });
   if (!res.ok) throw new Error(`HTTP ${res.status} fetching demo model`);

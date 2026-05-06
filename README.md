@@ -2,7 +2,7 @@
 
 > ### ▶ [**Play now in your browser →**](https://jmrothberg.github.io/chess_html/chess_full.html)
 >
-> No install. No server. Open the link, optionally click **Use demo model** under either side to fetch a pretrained chess LLM (~188 MB, served from the v1.0 release), set that side to **LLM**, and play.
+> No install. No server. Open the link, optionally click **Use demo model** under either side to fetch a pretrained chess LLM (~46 MB, bundled with the repo), set that side to **LLM**, and play.
 >
 > Search-only (no LLM, no download): [**chess.html →**](https://jmrothberg.github.io/chess_html/chess.html)
 
@@ -27,12 +27,14 @@ These links load the game straight from this repo via GitHub Pages — no clone,
 
 ### The bundled demo model
 
-The "Use demo model" button in `chess_full.html` fetches one chess LLM checkpoint from this repo's [v1.0 release](https://github.com/jmrothberg/chess_html/releases/tag/v1.0):
+The "Use demo model" button in `chess_full.html` fetches a chess LLM that ships **inside this repo** at `Chess_LLM_models copy/chess-12L-int8-demo.onnx`:
 
-- File: `C12H8E512K2_B512_E13B500_L0.844_0314_1720.onnx` (~188 MB)
+- Size: ~46 MB (int8-quantized for fast first-load)
 - Architecture: 4-token mode, 12 layers, 512-dim embeddings, 8 query heads, 2 KV heads, 512-token context
-- Format: fp16 ONNX, runs on WebGPU (Chrome/Edge) or WASM (Firefox/Safari)
-- Browser caches it after the first download.
+- Runtime: ONNX Runtime Web on WebGPU (Chrome/Edge) or WASM (Firefox/Safari)
+- Browser caches it after the first download
+
+A higher-quality fp16 version of the same checkpoint (~188 MB) is also available as a [v1.0 release asset](https://github.com/jmrothberg/chess_html/releases/tag/v1.0) for direct download — but the in-page button uses the bundled int8 because GitHub's release-asset CDN doesn't send CORS headers, which blocks browser fetches from web pages.
 
 ---
 

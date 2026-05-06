@@ -3,6 +3,10 @@
 Chess_LLM_models copy/*.pth
 Chess_LLM_models copy/*.onnx
 Chess_LLM_models copy/*.onnx.fp32.tmp.onnx
+# Exception: the bundled int8 demo model (~46 MB) ships with the repo so the
+# "Use demo model" button in chess_full.html can fetch it from GitHub Pages
+# (same-origin → no CORS issues; release-asset CDN doesn't send CORS headers).
+!Chess_LLM_models copy/chess-12L-int8-demo.onnx
 
 # Python build artifacts (chess_server.py / Chess_Inference copy.py)
 __pycache__/
